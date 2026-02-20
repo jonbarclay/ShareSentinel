@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShareSentinel - Sharing Link Remediation Report</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f5f7;font-family:Segoe UI,Roboto,Helvetica Neue,Arial,sans-serif;color:#172b4d;font-size:14px;line-height:1.5;">
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f5f7;">
+<tr><td align="center" style="padding:24px 16px;">
+
+<!-- Main card -->
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.12);">
+
+<!-- ============================================================ -->
+<!-- Banner                                                        -->
+<!-- ============================================================ -->
+<tr><td style="background-color:#00875a;padding:20px 24px;color:#ffffff;">
+  <h1 style="margin:0;font-size:20px;font-weight:600;">Sharing Link Remediation Report</h1>
+  <p style="margin:6px 0 0;font-size:14px;opacity:0.9;">A sharing link has been removed following a True Positive disposition</p>
+</td></tr>
+
+<!-- Content area -->
+<tr><td style="padding:24px;">
+
+<!-- ============================================================ -->
+<!-- File Details                                                   -->
+<!-- ============================================================ -->
+<h2 style="margin:0 0 12px;font-size:16px;font-weight:600;color:#172b4d;border-bottom:1px solid #dfe1e6;padding-bottom:8px;">File Details</h2>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;width:120px;vertical-align:top;">Name</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ file_name }}</td>
+  </tr>
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Path</td>
+    <td style="padding:4px 0;color:#172b4d;word-break:break-all;">{{ file_path }}</td>
+  </tr>
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Size</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ file_size_human }}</td>
+  </tr>
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Item Type</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ item_type }}</td>
+  </tr>
+</table>
+
+<!-- ============================================================ -->
+<!-- Sharing Details                                                -->
+<!-- ============================================================ -->
+<h2 style="margin:0 0 12px;font-size:16px;font-weight:600;color:#172b4d;border-bottom:1px solid #dfe1e6;padding-bottom:8px;">Sharing Details</h2>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;width:120px;vertical-align:top;">Shared By</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ sharing_user }}</td>
+  </tr>
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Sharing Type</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ sharing_type }}</td>
+  </tr>
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Permission</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ sharing_permission }}</td>
+  </tr>
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Time</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ event_time }}</td>
+  </tr>
+  {% if sharing_link_url %}
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Original Link</td>
+    <td style="padding:4px 0;color:#172b4d;word-break:break-all;">{{ sharing_link_url }}</td>
+  </tr>
+  {% endif %}
+</table>
+
+<!-- ============================================================ -->
+<!-- AI Analysis Results                                            -->
+<!-- ============================================================ -->
+{% if categories %}
+<h2 style="margin:0 0 12px;font-size:16px;font-weight:600;color:#172b4d;border-bottom:1px solid #dfe1e6;padding-bottom:8px;">AI Analysis Results</h2>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;width:120px;vertical-align:top;">Escalation</td>
+    <td style="padding:4px 0;color:#172b4d;">
+      <span style="display:inline-block;background-color:{% if escalation_tier == 'tier_1' %}#de350b{% elif escalation_tier == 'tier_2' %}#ff991f{% else %}#6b778c{% endif %};color:#ffffff;padding:2px 10px;border-radius:12px;font-weight:600;font-size:13px;">{{ escalation_tier or 'none' }}</span>
+    </td>
+  </tr>
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Categories</td>
+    <td style="padding:4px 0;color:#172b4d;">
+      {% for cat in categories %}
+      <div style="margin-bottom:4px;">
+        <span style="display:inline-block;background-color:#deebff;color:#0052cc;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;">{{ cat.id }}</span>
+        <span style="font-size:12px;color:#6b778c;">({{ cat.confidence }})</span>
+        {% if cat.evidence %}<span style="font-size:12px;color:#6b778c;"> — {{ cat.evidence }}</span>{% endif %}
+      </div>
+      {% endfor %}
+    </td>
+  </tr>
+  {% if summary %}
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Summary</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ summary }}</td>
+  </tr>
+  {% endif %}
+  {% if recommendation %}
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Recommendation</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ recommendation }}</td>
+  </tr>
+  {% endif %}
+</table>
+{% endif %}
+
+<!-- ============================================================ -->
+<!-- Action Taken                                                   -->
+<!-- ============================================================ -->
+<h2 style="margin:0 0 12px;font-size:16px;font-weight:600;color:#172b4d;border-bottom:1px solid #dfe1e6;padding-bottom:8px;">Action Taken</h2>
+<div style="background-color:#e3fcef;border-left:4px solid #00875a;padding:12px 14px;margin-bottom:20px;border-radius:0 4px 4px 0;">
+  <p style="margin:0 0 8px;font-weight:600;">The following sharing permissions have been removed:</p>
+  {% if permission_details %}
+  <ul style="margin:0;padding-left:20px;">
+    {% for detail in permission_details %}
+    <li style="margin-bottom:4px;">
+      {% if detail.scope is defined and detail.status is defined %}
+        <strong>{{ detail.scope | capitalize }} {{ detail.type | default('link', true) }}</strong> — {{ detail.status }}
+        {% if detail.error is defined %}<span style="color:#de350b;"> ({{ detail.error }})</span>{% endif %}
+      {% elif detail.note is defined %}
+        <em>{{ detail.note }}</em>
+      {% elif detail.error is defined %}
+        <span style="color:#de350b;">{{ detail.error }}</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p style="margin:0;">No anonymous or organization-wide sharing permissions were found on the item.</p>
+  {% endif %}
+</div>
+
+</td></tr>
+
+<!-- ============================================================ -->
+<!-- Technical Footer                                              -->
+<!-- ============================================================ -->
+<tr><td style="padding:16px 24px;background-color:#f4f5f7;border-top:1px solid #dfe1e6;font-size:12px;color:#6b778c;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td style="padding:2px 0;">Event ID: {{ event_id }}</td>
+    </tr>
+    <tr>
+      <td style="padding:2px 0;">Event Time: {{ event_time }}</td>
+    </tr>
+  </table>
+  <p style="margin:10px 0 0;font-size:11px;color:#97a0af;">This is an automated remediation report from ShareSentinel. Do not reply to this email.</p>
+</td></tr>
+
+</table>
+<!-- End main card -->
+
+</td></tr>
+</table>
+
+</body>
+</html>

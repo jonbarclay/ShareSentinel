@@ -1,0 +1,348 @@
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    container_name: sharesentinel-worker
+    tmpfs:
+      - /tmp/sharesentinel:size=12G,mode=1777
+    environment:
+      # Redis
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+
+      # Database
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-sharesentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharesentinel}
+
+      # Microsoft Graph API
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_CERTIFICATE=/app/certs/graph-api-cert.pfx
+      - AZURE_CERTIFICATE_PASS=${AZURE_CERTIFICATE_PASS}
+
+      # AI Provider
+      - AI_PROVIDER=${AI_PROVIDER:-anthropic}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-4-5-20250929}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
+      - VERTEX_PROJECT=${VERTEX_PROJECT}
+      - VERTEX_LOCATION=${VERTEX_LOCATION:-us-central1}
+      - AI_TEMPERATURE=${AI_TEMPERATURE:-0}
+      - AI_MAX_TOKENS=${AI_MAX_TOKENS:-1024}
+
+      # Second-Look AI Review
+      - SECOND_LOOK_ENABLED=${SECOND_LOOK_ENABLED:-false}
+      - SECOND_LOOK_PROVIDER=${SECOND_LOOK_PROVIDER:-gemini}
+      - SECOND_LOOK_MODEL=${SECOND_LOOK_MODEL:-gemini-3.1-pro-preview}
+
+      # Processing
+      - MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-5}
+      - MAX_CONCURRENT_AV_JOBS=${MAX_CONCURRENT_AV_JOBS:-2}
+      - MAX_FILE_SIZE_BYTES=${MAX_FILE_SIZE_BYTES:-52428800}
+      - MAX_AV_FILE_SIZE_BYTES=${MAX_AV_FILE_SIZE_BYTES:-1610612736}
+      - TEXT_CONTENT_LIMIT=${TEXT_CONTENT_LIMIT:-100000}
+      - HASH_REUSE_DAYS=${HASH_REUSE_DAYS:-30}
+
+      # Transcription (audio/video pipeline)
+      - TRANSCRIPTION_ENABLED=${TRANSCRIPTION_ENABLED:-true}
+      - GRAPH_TRANSCRIPT_TIMEOUT_SECONDS=${GRAPH_TRANSCRIPT_TIMEOUT_SECONDS:-30}
+      - WHISPER_ENABLED=${WHISPER_ENABLED:-true}
+      - WHISPER_MODEL=${WHISPER_MODEL:-base.en}
+      - WHISPER_SERVICE_URL=${WHISPER_SERVICE_URL:-http://transcriber:8090}
+
+      # Notifications
+      - ANALYST_NOTIFICATION_ENABLED=${ANALYST_NOTIFICATION_ENABLED:-true}
+      - NOTIFICATION_CHANNELS=${NOTIFICATION_CHANNELS:-email}
+      - NOTIFY_ON_FOLDER_SHARE=${NOTIFY_ON_FOLDER_SHARE:-true}
+      - NOTIFY_ON_FAILURE=${NOTIFY_ON_FAILURE:-true}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_USE_TLS=${SMTP_USE_TLS:-true}
+      - EMAIL_FROM=${EMAIL_FROM}
+      - EMAIL_TO=${EMAIL_TO}
+
+      # Security / remediation
+      - SECURITY_EMAIL=${SECURITY_EMAIL:-}
+
+      # User notifications (post-disposition emails to file owners)
+      - USER_NOTIFICATION_ENABLED=${USER_NOTIFICATION_ENABLED:-false}
+      - USER_NOTIFICATION_OVERRIDE_EMAIL=${USER_NOTIFICATION_OVERRIDE_EMAIL:-}
+      - USER_NOTIFICATION_BCC=${USER_NOTIFICATION_BCC:-}
+      - USER_NOTIFICATION_AI_PROVIDER=${USER_NOTIFICATION_AI_PROVIDER:-}
+      - USER_NOTIFICATION_AI_MODEL=${USER_NOTIFICATION_AI_MODEL:-}
+
+      # Jira (Phase 2)
+      - JIRA_URL=${JIRA_URL}
+      - JIRA_EMAIL=${JIRA_EMAIL}
+      - JIRA_API_TOKEN=${JIRA_API_TOKEN}
+      - JIRA_PROJECT_KEY=${JIRA_PROJECT_KEY}
+      - JIRA_ISSUE_TYPE=${JIRA_ISSUE_TYPE:-Task}
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./config:/app/config:ro
+      - ./scripts:/app/scripts:ro
+      - ${AZURE_CERTIFICATE:-./graph-api-cert.pfx}:/app/certs/graph-api-cert.pfx:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - sharesentinel
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  transcriber:
+    build:
+      context: ./services/transcriber
+      dockerfile: Dockerfile
+    container_name: sharesentinel-transcriber
+    tmpfs:
+      - /tmp/transcriber:size=8G,mode=1777
+    environment:
+      - WHISPER_MODEL=${WHISPER_MODEL:-base.en}
+      - WHISPER_DEVICE=${WHISPER_DEVICE:-cpu}
+      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
+      - MODEL_CACHE_DIR=/models
+      - TMPFS_PATH=/tmp/transcriber
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - whisper_models:/models
+    restart: unless-stopped
+    networks:
+      - sharesentinel
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: sharesentinel-nginx
+    ports:
+      - "443:443"
+    volumes:
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      dashboard:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - sharesentinel
+    healthcheck:
+      test: ["CMD", "curl", "-fsk", "https://localhost:443/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  dashboard:
+    build:
+      context: ./services/dashboard
+      dockerfile: Dockerfile
+    container_name: sharesentinel-dashboard
+    tmpfs:
+      - /tmp:rw,nosuid,size=512m
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-sharesentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharesentinel}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:8080}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+
+      # Microsoft Graph API (site search for allowlist)
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_CERTIFICATE=/app/certs/graph-api-cert.pfx
+      - AZURE_CERTIFICATE_PASS=${AZURE_CERTIFICATE_PASS}
+
+      # Entra ID SSO (OpenID Connect)
+      - OIDC_TENANT_ID=${OIDC_TENANT_ID}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID}
+      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET}
+      - OIDC_REDIRECT_URI=${OIDC_REDIRECT_URI:-http://localhost:8080/api/auth/callback}
+      - OIDC_ALLOWED_GROUP_IDS=${OIDC_ALLOWED_GROUP_IDS}
+      - OIDC_ADMIN_GROUP_IDS=${OIDC_ADMIN_GROUP_IDS:-}
+      - OIDC_ANALYST_GROUP_IDS=${OIDC_ANALYST_GROUP_IDS:-}
+      - SESSION_SECRET_KEY=${SESSION_SECRET_KEY}
+      - AUTH_DISABLED=${AUTH_DISABLED:-}
+      - DASHBOARD_URL=${DASHBOARD_URL:-http://localhost:8080}
+
+      # AI Provider (for content inspection)
+      - AI_PROVIDER=${AI_PROVIDER:-anthropic}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-4-5-20250929}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
+      - AI_MAX_TOKENS=${AI_MAX_TOKENS:-1024}
+      - TEXT_CONTENT_LIMIT=${TEXT_CONTENT_LIMIT:-100000}
+
+      # Browser auth (SharePoint root for cookie capture)
+      - SHAREPOINT_ROOT_URL=${SHAREPOINT_ROOT_URL:-https://www.office.com}
+    volumes:
+      - ./config:/app/config:ro
+      - ${AZURE_CERTIFICATE:-./graph-api-cert.pfx}:/app/certs/graph-api-cert.pfx:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - sharesentinel
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  lifecycle-cron:
+    build:
+      context: .
+      dockerfile: services/lifecycle-cron/Dockerfile
+    container_name: sharesentinel-lifecycle-cron
+    environment:
+      # Database
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-sharesentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharesentinel}
+
+      # Redis (audit log poller)
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+
+      # Microsoft Graph API
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_CERTIFICATE=/app/certs/graph-api-cert.pfx
+      - AZURE_CERTIFICATE_PASS=${AZURE_CERTIFICATE_PASS}
+
+      # Notifications
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_USE_TLS=${SMTP_USE_TLS:-true}
+      - EMAIL_FROM=${EMAIL_FROM}
+      - SECURITY_EMAIL=${SECURITY_EMAIL:-}
+
+      # Lifecycle settings
+      - LIFECYCLE_CHECK_INTERVAL_HOURS=${LIFECYCLE_CHECK_INTERVAL_HOURS:-24}
+      - LIFECYCLE_MAX_DAYS=${LIFECYCLE_MAX_DAYS:-180}
+
+      # Audit log polling
+      - AUDIT_POLL_ENABLED=${AUDIT_POLL_ENABLED:-true}
+      - AUDIT_POLL_INTERVAL_MINUTES=${AUDIT_POLL_INTERVAL_MINUTES:-15}
+
+      # Allowlist enforcement
+      - ALLOWLIST_ENFORCEMENT_ENABLED=${ALLOWLIST_ENFORCEMENT_ENABLED:-false}
+      - ALLOWLIST_ENFORCEMENT_INTERVAL_HOURS=${ALLOWLIST_ENFORCEMENT_INTERVAL_HOURS:-168}
+      - ALLOWLIST_ENABLED_CAPABILITY=${ALLOWLIST_ENABLED_CAPABILITY:-ExternalUserAndGuestSharing}
+      - ALLOWLIST_DISABLED_CAPABILITY=${ALLOWLIST_DISABLED_CAPABILITY:-ExternalUserSharingOnly}
+      - SHAREPOINT_ADMIN_URL=${SHAREPOINT_ADMIN_URL}
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./config:/app/config:ro
+      - ${AZURE_CERTIFICATE:-./graph-api-cert.pfx}:/app/certs/graph-api-cert.pfx:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - sharesentinel
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  redis:
+    image: redis:7-alpine
+    container_name: sharesentinel-redis
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - sharesentinel
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: sharesentinel-postgres
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-sharesentinel}
+      - POSTGRES_USER=${POSTGRES_USER:-sharesentinel}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
+    restart: unless-stopped
+    networks:
+      - sharesentinel
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-sharesentinel} -d ${POSTGRES_DB:-sharesentinel}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  redis_data:
+  postgres_data:
+  whisper_models:
+
+networks:
+  sharesentinel:
+    driver: bridge

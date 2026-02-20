@@ -1,0 +1,365 @@
+.allowlist-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.allowlist-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.sync-btn {
+  padding: 0.5rem 1.25rem;
+  border: 1px solid var(--uvu-green);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: var(--uvu-green);
+  color: #ffffff;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.sync-btn:hover:not(:disabled) {
+  background: var(--uvu-green-d1);
+}
+
+.sync-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.sync-result {
+  font-size: 0.85rem;
+  color: var(--uvu-text-muted);
+  margin-left: 0.75rem;
+}
+
+/* Add site section */
+.add-site-section {
+  background: var(--uvu-surface);
+  padding: 1rem;
+  border-radius: var(--card-radius);
+  border: 1px solid var(--uvu-border);
+  box-shadow: var(--card-shadow);
+}
+
+.add-site-section h3 {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.95rem;
+  color: var(--uvu-text);
+}
+
+.search-wrapper {
+  position: relative;
+}
+
+.search-input {
+  width: 100%;
+  max-width: 500px;
+}
+
+.search-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  max-width: 500px;
+  max-height: 300px;
+  overflow-y: auto;
+  background: var(--uvu-surface);
+  border: 1px solid var(--uvu-border);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  z-index: 50;
+}
+
+.search-item {
+  padding: 0.6rem 0.75rem;
+  cursor: pointer;
+  border-bottom: 1px solid var(--uvu-border);
+  transition: var(--transition);
+}
+
+.search-item:last-child {
+  border-bottom: none;
+}
+
+.search-item:hover {
+  background: rgba(39, 93, 56, 0.06);
+}
+
+.search-item-name {
+  font-weight: 500;
+  font-size: 0.9rem;
+  color: var(--uvu-text);
+}
+
+.search-item-url {
+  font-size: 0.8rem;
+  color: var(--uvu-text-muted);
+  margin-top: 2px;
+}
+
+.badge-allowed {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(39, 93, 56, 0.1);
+  color: var(--uvu-green);
+  margin-left: 0.5rem;
+}
+
+/* Notes input shown after selecting a site */
+.add-site-form {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  margin-top: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.add-site-form .selected-name {
+  font-weight: 500;
+  font-size: 0.9rem;
+  color: var(--uvu-text);
+}
+
+.notes-input {
+  width: 250px;
+}
+
+.add-btn {
+  padding: 0.45rem 1rem;
+  border: 1px solid var(--uvu-green);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: var(--uvu-green);
+  color: #ffffff;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.add-btn:hover {
+  background: var(--uvu-green-d1);
+}
+
+.cancel-btn {
+  padding: 0.45rem 1rem;
+  border: 1px solid var(--uvu-border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  background: var(--uvu-surface);
+  color: var(--uvu-text);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.cancel-btn:hover {
+  border-color: var(--uvu-text-muted);
+}
+
+/* Allow list table */
+.allowlist-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.allowlist-table th {
+  text-align: left;
+  padding: 0.75rem 1rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--uvu-text-muted);
+  border-bottom: 2px solid var(--uvu-border);
+}
+
+.allowlist-table td {
+  padding: 0.65rem 1rem;
+  font-size: 0.875rem;
+  border-bottom: 1px solid var(--uvu-border);
+  color: var(--uvu-text);
+}
+
+.allowlist-table tr:hover td {
+  background: rgba(39, 93, 56, 0.03);
+}
+
+.remove-btn {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid #dc3545;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  background: transparent;
+  color: #dc3545;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.remove-btn:hover {
+  background: #dc3545;
+  color: #ffffff;
+}
+
+/* Sync history section */
+.sync-history-section {
+  background: var(--uvu-surface);
+  border-radius: var(--card-radius);
+  border: 1px solid var(--uvu-border);
+  box-shadow: var(--card-shadow);
+}
+
+.sync-history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.sync-history-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--uvu-text);
+}
+
+.sync-history-toggle {
+  font-size: 0.8rem;
+  color: var(--uvu-text-muted);
+}
+
+.sync-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.sync-table th {
+  text-align: left;
+  padding: 0.6rem 1rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--uvu-text-muted);
+  border-bottom: 2px solid var(--uvu-border);
+}
+
+.sync-table td {
+  padding: 0.55rem 1rem;
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--uvu-border);
+  color: var(--uvu-text);
+}
+
+.sync-table tr.clickable {
+  cursor: pointer;
+}
+
+.sync-table tr.clickable:hover td {
+  background: rgba(39, 93, 56, 0.03);
+}
+
+/* Status badges */
+.status-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.status-badge.completed {
+  background: rgba(39, 93, 56, 0.1);
+  color: var(--uvu-green);
+}
+
+.status-badge.failed {
+  background: rgba(220, 53, 69, 0.1);
+  color: #dc3545;
+}
+
+.status-badge.in_progress {
+  background: rgba(218, 165, 32, 0.1);
+  color: #b8860b;
+}
+
+.status-badge.pending {
+  background: rgba(108, 117, 125, 0.1);
+  color: #6c757d;
+}
+
+/* Sync details (expandable) */
+.sync-details-row td {
+  padding: 0;
+}
+
+.sync-details-inner {
+  padding: 0.5rem 1rem 1rem 2rem;
+}
+
+.sync-details-inner table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.sync-details-inner th {
+  text-align: left;
+  padding: 0.4rem 0.75rem;
+  font-weight: 600;
+  color: var(--uvu-text-muted);
+  border-bottom: 1px solid var(--uvu-border);
+}
+
+.sync-details-inner td {
+  padding: 0.35rem 0.75rem;
+  border-bottom: 1px solid var(--uvu-border);
+}
+
+.action-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.action-badge.disabled {
+  background: rgba(220, 53, 69, 0.1);
+  color: #dc3545;
+}
+
+.action-badge.enabled {
+  background: rgba(39, 93, 56, 0.1);
+  color: var(--uvu-green);
+}
+
+.action-badge.no_change {
+  background: rgba(108, 117, 125, 0.1);
+  color: #6c757d;
+}
+
+.action-badge.failed {
+  background: rgba(220, 53, 69, 0.1);
+  color: #dc3545;
+}
+
+.empty-message {
+  text-align: center;
+  padding: 2rem;
+  color: var(--uvu-text-muted);
+  font-size: 0.9rem;
+}

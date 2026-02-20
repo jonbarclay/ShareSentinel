@@ -1,0 +1,127 @@
+excluded_extensions:
+  # Binary/Executable
+  - .exe
+  - .dll
+  - .bin
+  - .msi
+  - .app
+  - .dmg
+  # Database
+  - .mdb
+  - .accdb
+  - .sqlite
+  - .db
+  # Design
+  - .psd
+  - .ai
+  - .sketch
+  - .fig
+  # 3D/CAD
+  - .dwg
+  - .dxf
+  - .stl
+  - .obj
+  # Calendar
+  - .ics
+  # Font
+  - .ttf
+  - .otf
+  - .woff
+
+archive_extensions:
+  - .zip
+  - .rar
+  - .7z
+  - .tar
+  - .gz
+  - .tar.gz
+  - .tgz
+
+image_extensions:
+  - .png
+  - .jpg
+  - .jpeg
+  - .tiff
+  - .tif
+  - .bmp
+  - .gif
+  - .webp
+  - .heic
+
+text_extractable_extensions:
+  pdf: pdf_extractor
+  docx: docx_extractor
+  doc: docx_extractor
+  xlsx: xlsx_extractor
+  xls: xlsx_extractor
+  pptx: pptx_extractor
+  ppt: pptx_extractor
+  csv: csv_extractor
+  tsv: csv_extractor
+  txt: text_extractor
+  log: text_extractor
+  md: text_extractor
+  json: text_extractor
+  xml: text_extractor
+  html: text_extractor
+  htm: text_extractor
+  rtf: text_extractor
+  one: onenote_extractor
+
+sensitivity_keywords:
+  - "ssn"
+  - "w-?2"
+  - "tax"
+  - "passport"
+  - "salary"
+  - "confidential"
+  - "medical"
+  - "hipaa"
+  - "ferpa"
+  - "grades"
+  - "transcript"
+  - "disciplin"
+  - "social.?security"
+  - "driver.?licen"
+  - "birth.?cert"
+  - "routing.?number"
+  - "account.?number"
+  - "secret"
+  - "password"
+  - "credential"
+  - "ssh"
+  - "id_rsa"
+  - "authorized.?keys"
+  - "private.?key"
+  - "\\.env"
+  - "\\.pem"
+  - "\\.pfx"
+  - "\\.key"
+  - "aws.?access"
+  - "kubeconfig"
+  - "connection.?string"
+  - "api.?key"
+
+audio_video_extensions:
+  video:
+    - .mp4
+    - .mov
+    - .avi
+    - .mkv
+    - .wmv
+    - .flv
+    - .webm
+    - .m4v
+  audio:
+    - .mp3
+    - .wav
+    - .m4a
+    - .aac
+    - .flac
+    - .ogg
+    - .wma
+
+delegated_content_extensions:
+  - .loop
+  - .fluid
+  - .whiteboard

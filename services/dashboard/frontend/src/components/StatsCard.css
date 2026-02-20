@@ -1,0 +1,54 @@
+.stats-card {
+  min-width: 200px;
+  flex: 1 1 200px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.stats-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 4px;
+  height: 100%;
+  background: var(--uvu-green);
+  border-radius: var(--card-radius) 0 0 var(--card-radius);
+  opacity: 0.5;
+  transition: var(--transition);
+}
+
+.stats-card:hover::before {
+  opacity: 1;
+  width: 6px;
+}
+
+.stats-label {
+  font-size: 0.85rem;
+  color: var(--uvu-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.stats-value {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--uvu-green-d2);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.stats-card.clickable {
+  cursor: pointer;
+  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.stats-card.clickable:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
+}
