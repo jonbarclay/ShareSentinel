@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShareSentinel Alert</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f5f7;font-family:Segoe UI,Roboto,Helvetica Neue,Arial,sans-serif;color:#172b4d;font-size:14px;line-height:1.5;">
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f5f7;">
+<tr><td align="center" style="padding:24px 16px;">
+
+<!-- Main card -->
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.12);">
+
+<!-- ============================================================ -->
+<!-- Alert Banner                                                  -->
+<!-- ============================================================ -->
+{% if alert_type == "high_sensitivity_file" and sensitivity_rating == 5 %}
+<tr><td style="background-color:#de350b;padding:20px 24px;color:#ffffff;">
+  <h1 style="margin:0;font-size:20px;font-weight:600;">Critical Sensitivity Alert</h1>
+  <p style="margin:6px 0 0;font-size:14px;opacity:0.9;">Sensitivity Rating: {{ sensitivity_rating }}/5</p>
+</td></tr>
+{% elif alert_type == "high_sensitivity_file" and sensitivity_rating == 4 %}
+<tr><td style="background-color:#ff991f;padding:20px 24px;color:#172b4d;">
+  <h1 style="margin:0;font-size:20px;font-weight:600;">High Sensitivity Alert</h1>
+  <p style="margin:6px 0 0;font-size:14px;">Sensitivity Rating: {{ sensitivity_rating }}/5</p>
+</td></tr>
+{% elif alert_type == "folder_share" %}
+<tr><td style="background-color:#ffab00;padding:20px 24px;color:#172b4d;">
+  <h1 style="margin:0;font-size:20px;font-weight:600;">Folder Shared with Broad Access</h1>
+  <p style="margin:6px 0 0;font-size:14px;">{{ sharing_type }} {{ sharing_permission }} access detected</p>
+</td></tr>
+{% elif alert_type == "processing_failure" %}
+<tr><td style="background-color:#6b778c;padding:20px 24px;color:#ffffff;">
+  <h1 style="margin:0;font-size:20px;font-weight:600;">Processing Failure</h1>
+  <p style="margin:6px 0 0;font-size:14px;opacity:0.9;">Automated analysis could not be completed</p>
+</td></tr>
+{% else %}
+<tr><td style="background-color:#0052cc;padding:20px 24px;color:#ffffff;">
+  <h1 style="margin:0;font-size:20px;font-weight:600;">ShareSentinel Alert</h1>
+</td></tr>
+{% endif %}
+
+<!-- Content area -->
+<tr><td style="padding:24px;">
+
+<!-- ============================================================ -->
+<!-- File Details                                                   -->
+<!-- ============================================================ -->
+<h2 style="margin:0 0 12px;font-size:16px;font-weight:600;color:#172b4d;border-bottom:1px solid #dfe1e6;padding-bottom:8px;">File Details</h2>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;width:120px;vertical-align:top;">Name</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ file_name }}</td>
+  </tr>
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Path</td>
+    <td style="padding:4px 0;color:#172b4d;word-break:break-all;">{{ file_path }}</td>
+  </tr>
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Size</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ file_size_human }}</td>
+  </tr>
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Item Type</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ item_type }}</td>
+  </tr>
+</table>
+
+<!-- ============================================================ -->
+<!-- Sharing Details                                                -->
+<!-- ============================================================ -->
+<h2 style="margin:0 0 12px;font-size:16px;font-weight:600;color:#172b4d;border-bottom:1px solid #dfe1e6;padding-bottom:8px;">Sharing Details</h2>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;width:120px;vertical-align:top;">Shared By</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ sharing_user }}</td>
+  </tr>
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Sharing Type</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ sharing_type }}</td>
+  </tr>
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Permission</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ sharing_permission }}</td>
+  </tr>
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Time</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ event_time }}</td>
+  </tr>
+  {% if sharing_link_url %}
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Sharing Link</td>
+    <td style="padding:4px 0;"><a href="{{ sharing_link_url }}" style="color:#0052cc;text-decoration:none;">{{ sharing_link_url }}</a></td>
+  </tr>
+  {% endif %}
+</table>
+
+<!-- ============================================================ -->
+<!-- AI Analysis Results (only for high_sensitivity_file)          -->
+<!-- ============================================================ -->
+{% if alert_type == "high_sensitivity_file" and sensitivity_rating is not none %}
+<h2 style="margin:0 0 12px;font-size:16px;font-weight:600;color:#172b4d;border-bottom:1px solid #dfe1e6;padding-bottom:8px;">AI Analysis Results</h2>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;width:120px;vertical-align:top;">Rating</td>
+    <td style="padding:4px 0;color:#172b4d;">
+      <span style="display:inline-block;background-color:{% if sensitivity_rating == 5 %}#de350b{% elif sensitivity_rating == 4 %}#ff991f{% else %}#6b778c{% endif %};color:#ffffff;padding:2px 10px;border-radius:12px;font-weight:600;font-size:13px;">{{ sensitivity_rating }}/5</span>
+    </td>
+  </tr>
+  {% if categories_detected %}
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Categories</td>
+    <td style="padding:4px 0;color:#172b4d;">
+      {% for cat in categories_detected %}
+      <span style="display:inline-block;background-color:#deebff;color:#0052cc;padding:2px 8px;border-radius:4px;font-size:12px;margin:2px 4px 2px 0;">{{ cat }}</span>
+      {% endfor %}
+    </td>
+  </tr>
+  {% endif %}
+  {% if summary %}
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Summary</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ summary }}</td>
+  </tr>
+  {% endif %}
+  {% if confidence %}
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Confidence</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ confidence }}</td>
+  </tr>
+  {% endif %}
+  {% if recommendation %}
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Recommendation</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ recommendation }}</td>
+  </tr>
+  {% endif %}
+  {% if analysis_mode %}
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Analysis Mode</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ analysis_mode }}</td>
+  </tr>
+  {% endif %}
+</table>
+
+{% if was_sampled and sampling_description %}
+<div style="background-color:#fffae6;border-left:4px solid #ff991f;padding:10px 14px;margin-bottom:20px;border-radius:0 4px 4px 0;font-size:13px;">
+  <strong>Note:</strong> {{ sampling_description }}
+</div>
+{% endif %}
+{% endif %}
+
+<!-- ============================================================ -->
+<!-- Failure Reason (only for processing_failure)                  -->
+<!-- ============================================================ -->
+{% if alert_type == "processing_failure" and failure_reason %}
+<h2 style="margin:0 0 12px;font-size:16px;font-weight:600;color:#172b4d;border-bottom:1px solid #dfe1e6;padding-bottom:8px;">Failure Reason</h2>
+<div style="background-color:#ffebe6;border-left:4px solid #de350b;padding:10px 14px;margin-bottom:20px;border-radius:0 4px 4px 0;font-size:13px;">
+  {{ failure_reason }}
+</div>
+{% endif %}
+
+<!-- ============================================================ -->
+<!-- Filename Flag Warning                                         -->
+<!-- ============================================================ -->
+{% if filename_flagged and filename_flag_keywords %}
+<div style="background-color:#fffae6;border-left:4px solid #ff991f;padding:10px 14px;margin-bottom:20px;border-radius:0 4px 4px 0;font-size:13px;">
+  <strong>Filename keywords flagged:</strong> {{ filename_flag_keywords | join(', ') }}
+</div>
+{% endif %}
+
+<!-- ============================================================ -->
+<!-- Action Required                                               -->
+<!-- ============================================================ -->
+<h2 style="margin:0 0 12px;font-size:16px;font-weight:600;color:#172b4d;border-bottom:1px solid #dfe1e6;padding-bottom:8px;">Action Required</h2>
+<div style="background-color:#e3fcef;border-left:4px solid #00875a;padding:12px 14px;margin-bottom:20px;border-radius:0 4px 4px 0;">
+{% if alert_type == "high_sensitivity_file" %}
+  <p style="margin:0 0 8px;">Review the file and its sharing settings. If the content is confirmed sensitive, consider:</p>
+  <ul style="margin:0;padding-left:20px;">
+    <li>Contacting <strong>{{ sharing_user }}</strong> to discuss the sharing</li>
+    <li>Restricting or removing the sharing link</li>
+    <li>Verifying the file classification</li>
+  </ul>
+{% elif alert_type == "folder_share" %}
+  <p style="margin:0 0 8px;">A folder with broad sharing may expose current and future files. Please:</p>
+  <ul style="margin:0;padding-left:20px;">
+    <li>Review the folder contents for sensitive material</li>
+    <li>Contact <strong>{{ sharing_user }}</strong> about the sharing scope</li>
+    <li>Consider restricting access to specific people</li>
+  </ul>
+{% elif alert_type == "processing_failure" %}
+  <p style="margin:0 0 8px;">Automated analysis could not be completed. Please:</p>
+  <ul style="margin:0;padding-left:20px;">
+    <li>Manually review the shared file or folder</li>
+    <li>Verify the sharing settings are appropriate</li>
+    <li>Report persistent failures to the ShareSentinel administrator</li>
+  </ul>
+{% endif %}
+</div>
+
+{% if sharing_link_url %}
+<div style="text-align:center;margin-bottom:20px;">
+  <a href="{{ sharing_link_url }}" style="display:inline-block;background-color:#0052cc;color:#ffffff;padding:10px 24px;border-radius:4px;text-decoration:none;font-weight:600;font-size:14px;">View Shared Item</a>
+</div>
+{% endif %}
+
+</td></tr>
+
+<!-- ============================================================ -->
+<!-- Technical Footer                                              -->
+<!-- ============================================================ -->
+<tr><td style="padding:16px 24px;background-color:#f4f5f7;border-top:1px solid #dfe1e6;font-size:12px;color:#6b778c;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td style="padding:2px 0;">Event ID: {{ event_id }}</td>
+    </tr>
+    <tr>
+      <td style="padding:2px 0;">Event Time: {{ event_time }}</td>
+    </tr>
+    {% if analysis_mode %}
+    <tr>
+      <td style="padding:2px 0;">Analysis Mode: {{ analysis_mode }}</td>
+    </tr>
+    {% endif %}
+  </table>
+  <p style="margin:10px 0 0;font-size:11px;color:#97a0af;">This is an automated alert from ShareSentinel. Do not reply to this email.</p>
+</td></tr>
+
+</table>
+<!-- End main card -->
+
+</td></tr>
+</table>
+
+</body>
+</html>

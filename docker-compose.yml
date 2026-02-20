@@ -1,0 +1,160 @@
+version: '3.8'
+
+services:
+  webhook-listener:
+    build:
+      context: ./services/webhook-listener
+      dockerfile: Dockerfile
+    container_name: sharesentinel-webhook
+    ports:
+      - "${WEBHOOK_HOST_PORT:-8000}:8000"
+    environment:
+      - WEBHOOK_PORT=8000
+      - WEBHOOK_AUTH_SECRET=${WEBHOOK_AUTH_SECRET}
+      - REDIS_URL=redis://redis:6379/0
+      - DEDUP_TTL_SECONDS=${DEDUP_TTL_SECONDS:-86400}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - sharesentinel
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  worker:
+    build:
+      context: ./services/worker
+      dockerfile: Dockerfile
+    container_name: sharesentinel-worker
+    tmpfs:
+      - /tmp/sharesentinel:size=256M,mode=1777
+    environment:
+      # Redis
+      - REDIS_URL=redis://redis:6379/0
+
+      # Database
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-sharesentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharesentinel}
+
+      # Microsoft Graph API
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+
+      # AI Provider
+      - AI_PROVIDER=${AI_PROVIDER:-anthropic}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-4-5-20250929}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
+      - AI_TEMPERATURE=${AI_TEMPERATURE:-0}
+      - AI_MAX_TOKENS=${AI_MAX_TOKENS:-1024}
+
+      # Processing
+      - MAX_FILE_SIZE_BYTES=${MAX_FILE_SIZE_BYTES:-52428800}
+      - TEXT_CONTENT_LIMIT=${TEXT_CONTENT_LIMIT:-100000}
+      - SENSITIVITY_THRESHOLD=${SENSITIVITY_THRESHOLD:-4}
+      - HASH_REUSE_DAYS=${HASH_REUSE_DAYS:-30}
+
+      # Notifications
+      - NOTIFICATION_CHANNELS=${NOTIFICATION_CHANNELS:-email}
+      - NOTIFY_ON_FOLDER_SHARE=${NOTIFY_ON_FOLDER_SHARE:-true}
+      - NOTIFY_ON_FAILURE=${NOTIFY_ON_FAILURE:-true}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_USE_TLS=${SMTP_USE_TLS:-true}
+      - EMAIL_FROM=${EMAIL_FROM}
+      - EMAIL_TO=${EMAIL_TO}
+
+      # Jira (Phase 2)
+      - JIRA_URL=${JIRA_URL}
+      - JIRA_EMAIL=${JIRA_EMAIL}
+      - JIRA_API_TOKEN=${JIRA_API_TOKEN}
+      - JIRA_PROJECT_KEY=${JIRA_PROJECT_KEY}
+      - JIRA_ISSUE_TYPE=${JIRA_ISSUE_TYPE:-Task}
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./config:/app/config:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - sharesentinel
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  redis:
+    image: redis:7-alpine
+    container_name: sharesentinel-redis
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - sharesentinel
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: sharesentinel-postgres
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-sharesentinel}
+      - POSTGRES_USER=${POSTGRES_USER:-sharesentinel}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
+    restart: unless-stopped
+    networks:
+      - sharesentinel
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sharesentinel} -d ${POSTGRES_DB:-sharesentinel}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  redis_data:
+  postgres_data:
+
+networks:
+  sharesentinel:
+    driver: bridge
