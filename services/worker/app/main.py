@@ -64,6 +64,8 @@ def create_ai_provider(config: Config) -> BaseAIProvider:
             prompt_manager=prompt_manager,
             max_tokens=config.ai_max_tokens,
             temperature=config.ai_temperature,
+            project=config.vertex_project,
+            location=config.vertex_location,
         )
     else:
         raise ValueError(f"Unknown AI provider: {config.ai_provider}")
@@ -176,9 +178,22 @@ async def main() -> None:
         len(notifier_dispatcher.notifiers),
     )
 
+    # Graph auth (shared with orchestrator pipeline and remediation poller)
+    from app.graph_api.auth import GraphAuth
+    graph_auth = GraphAuth(
+        tenant_id=config.azure_tenant_id,
+        client_id=config.azure_client_id,
+        client_secret=config.azure_client_secret,
+        certificate_path=config.azure_certificate_path or None,
+        certificate_password=config.azure_certificate_password or None,
+    )
+
     # Background tasks
     asyncio.create_task(heartbeat_loop(redis_conn))
     asyncio.create_task(cleanup_stale_files(config.tmpfs_path))
+
+    from app.remediation.poller import remediation_poller
+    asyncio.create_task(remediation_poller(db_pool, config, graph_auth))
 
     # Graceful shutdown
     shutdown_event = asyncio.Event()

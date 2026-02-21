@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import httpx
+
 from ..ai.base_provider import AnalysisRequest, AnalysisResponse, BaseAIProvider
 from ..ai.prompt_manager import PromptManager, format_file_size
 from ..config import Config
@@ -29,6 +31,7 @@ from ..notifications.base_notifier import AlertPayload, NotificationDispatcher
 from .classifier import Action, Category, ClassificationResult, FileClassifier
 from .cleanup import Cleanup
 from .downloader import DownloadError, FileDownloader
+from ..graph_api.client import AccessDeniedError, FileNotFoundError as GraphFileNotFoundError, GraphAPIError
 from .hasher import FileHasher
 from .metadata import MetadataPrescreen
 from .retry import retry_with_backoff
@@ -83,9 +86,13 @@ async def process_job(
 
     try:
         # ----------------------------------------------------------------
-        # Step 1: Record Event
+        # Step 1: Record Event (skip if duplicate)
         # ----------------------------------------------------------------
-        await event_repo.create_event(job)
+        row_id = await event_repo.create_event(job)
+        if row_id is None:
+            logger.info("[%s] Step 1: Duplicate event, skipping", event_id)
+            await audit_repo.log(event_id, "duplicate_skipped", {"reason": "event_id already exists"})
+            return
         await audit_repo.log(event_id, "event_recorded", {"status": "processing"})
         logger.info("[%s] Step 1: Event recorded", event_id)
 
@@ -113,10 +120,44 @@ async def process_job(
             auth=_build_graph_auth(config),
         )
         prescreener = MetadataPrescreen()
-        metadata = await retry_with_backoff(
-            prescreener.fetch_metadata,
-            job, graph_client, event_repo, audit_repo,
-        )
+        try:
+            metadata = await retry_with_backoff(
+                prescreener.fetch_metadata,
+                job, graph_client, event_repo, audit_repo,
+                config.user_profile_cache_days, config.upn_domain,
+            )
+        except GraphFileNotFoundError:
+            logger.warning("[%s] Step 3: Item no longer exists (404)", event_id)
+            await audit_repo.log(event_id, "metadata_failed", {"reason": "file_not_found"}, status="error")
+            await event_repo.update_event_status(event_id, "completed", failure_reason="file_not_found")
+            return
+        except (AccessDeniedError, GraphAPIError, httpx.HTTPStatusError) as exc:
+            status_code = getattr(exc, "status_code", 0)
+            if isinstance(exc, httpx.HTTPStatusError):
+                status_code = exc.response.status_code
+            logger.warning("[%s] Step 3: Metadata fetch failed (HTTP %s: %s), falling back to filename-only", event_id, status_code, exc)
+            await audit_repo.log(
+                event_id, "metadata_failed",
+                {"reason": "graph_api_error", "status_code": status_code},
+                status="error",
+            )
+            # Fall back to filename-only analysis using job data
+            metadata = {
+                "name": getattr(job, "file_name", "") or "",
+                "size": 0,
+                "parent_path": getattr(job, "relative_path", "") or "",
+            }
+            analysis_mode = "filename_only"
+            request = _build_filename_only_request(job, metadata, classification=None)
+            analysis_response = await _run_ai_analysis(
+                ai_provider, request, event_id, audit_repo,
+            )
+            await _record_and_notify(
+                event_id, analysis_response, analysis_mode, config,
+                event_repo, verdict_repo, file_hash_repo, audit_repo,
+                notifier_dispatcher, job, metadata, file_hash,
+            )
+            return
         logger.info("[%s] Step 3: Metadata fetched (size=%s)", event_id, metadata.get("size"))
 
         # ----------------------------------------------------------------
@@ -327,6 +368,8 @@ def _build_graph_auth(config: Config) -> Any:
         tenant_id=config.azure_tenant_id,
         client_id=config.azure_client_id,
         client_secret=config.azure_client_secret,
+        certificate_path=config.azure_certificate_path or None,
+        certificate_password=config.azure_certificate_password or None,
     )
 
 
@@ -398,6 +441,7 @@ async def _handle_folder_share(
             sharing_permission=sharing_perm,
             event_time=getattr(job, "event_time", "") or "",
             sharing_link_url=metadata.get("sharing_link_url"),
+            sharing_links=metadata.get("sharing_links"),
             summary=summary,
             recommendation="Review folder contents and sharing permissions.",
         )
@@ -639,7 +683,21 @@ async def _record_and_notify(
 ) -> None:
     """Record the AI verdict, store file hash, notify if risky, and complete."""
 
-    notification_required = response.sensitivity_rating >= config.sensitivity_threshold
+    # Escalate based on rating threshold OR regulated-data categories
+    ESCALATION_CATEGORIES = {"ferpa", "hipaa", "student", "academic records", "health information"}
+    category_escalation = any(
+        any(kw in cat.lower() for kw in ESCALATION_CATEGORIES)
+        for cat in response.categories_detected
+    )
+    notification_required = (
+        response.sensitivity_rating >= config.sensitivity_threshold
+        or category_escalation
+    )
+    if category_escalation and response.sensitivity_rating < config.sensitivity_threshold:
+        logger.info(
+            "[%s] Category-based escalation triggered: %s",
+            event_id, response.categories_detected,
+        )
 
     # Step 10: Record verdict
     await verdict_repo.create_verdict(
@@ -674,6 +732,7 @@ async def _record_and_notify(
             sharing_permission=getattr(job, "sharing_permission", "") or "",
             event_time=getattr(job, "event_time", "") or "",
             sharing_link_url=metadata.get("sharing_link_url"),
+            sharing_links=metadata.get("sharing_links"),
             sensitivity_rating=response.sensitivity_rating,
             categories_detected=response.categories_detected,
             summary=response.summary,
@@ -726,6 +785,7 @@ async def _notify_failure(
         sharing_permission=getattr(job, "sharing_permission", "") or "",
         event_time=getattr(job, "event_time", "") or "",
         sharing_link_url=metadata.get("sharing_link_url"),
+        sharing_links=metadata.get("sharing_links"),
         failure_reason=reason,
     )
     results = await notifier_dispatcher.dispatch(payload)

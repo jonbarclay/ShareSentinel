@@ -21,6 +21,7 @@ class OpenAIProvider(BaseAIProvider):
     PRICING: Dict[str, Dict[str, float]] = {
         "gpt-4o": {"input": 2.50, "output": 10.00},
         "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+        "gpt-5-nano": {"input": 0.10, "output": 0.40},
     }
 
     def __init__(
@@ -46,15 +47,26 @@ class OpenAIProvider(BaseAIProvider):
         try:
             messages = self._build_messages(request)
 
-            response = await self.client.chat.completions.create(
+            kwargs: dict = dict(
                 model=self.model,
                 messages=messages,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
+                max_completion_tokens=self.max_tokens,
                 response_format={"type": "json_object"},
             )
+            if self.temperature:
+                kwargs["temperature"] = self.temperature
+
+            response = await self.client.chat.completions.create(**kwargs)
 
             processing_time = time.time() - start_time
+
+            finish_reason = response.choices[0].finish_reason
+            if finish_reason == "length":
+                logger.warning(
+                    "OpenAI response truncated (finish_reason=length, "
+                    "max_completion_tokens=%d). Consider raising AI_MAX_TOKENS.",
+                    self.max_tokens,
+                )
 
             raw_text = response.choices[0].message.content or ""
             parsed = parse_ai_response(raw_text)
@@ -80,7 +92,7 @@ class OpenAIProvider(BaseAIProvider):
         except Exception as exc:
             logger.exception("OpenAI analysis failed")
             return AnalysisResponse(
-                sensitivity_rating=0,
+                sensitivity_rating=1,
                 categories_detected=[],
                 summary="",
                 confidence="",

@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional, Union
 
 import msal
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    pkcs12,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -16,20 +23,50 @@ class GraphAuth:
     """Acquires and caches Microsoft Graph API access tokens.
 
     Uses MSAL's ``ConfidentialClientApplication`` which handles token
-    caching and automatic refresh internally.
+    caching and automatic refresh internally.  Supports both client-secret
+    and PFX certificate credentials.
     """
 
-    def __init__(self, tenant_id: str, client_id: str, client_secret: str) -> None:
+    def __init__(
+        self,
+        tenant_id: str,
+        client_id: str,
+        client_secret: str,
+        certificate_path: str | None = None,
+        certificate_password: str | None = None,
+    ) -> None:
         self._authority = f"https://login.microsoftonline.com/{tenant_id}"
         self._app: Optional[msal.ConfidentialClientApplication] = None
         self._client_id = client_id
         self._client_secret = client_secret
+        self._certificate_path = certificate_path
+        self._certificate_password = certificate_password
+
+    def _resolve_credential(self) -> Union[str, Dict[str, str]]:
+        """Return the MSAL client_credential value.
+
+        If a certificate path is configured, load the PFX and return a dict
+        with ``private_key`` and ``thumbprint``.  Otherwise fall back to the
+        plain client secret string.
+        """
+        if self._certificate_path:
+            with open(self._certificate_path, "rb") as f:
+                pfx_data = f.read()
+            private_key, certificate, _ = pkcs12.load_key_and_certificates(
+                pfx_data,
+                self._certificate_password.encode() if self._certificate_password else None,
+            )
+            pem_key = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+            thumbprint = hashlib.sha1(certificate.public_bytes(Encoding.DER)).hexdigest().upper()
+            logger.info("Using certificate credential (thumbprint=%s)", thumbprint)
+            return {"private_key": pem_key.decode(), "thumbprint": thumbprint}
+        return self._client_secret
 
     def _get_app(self) -> msal.ConfidentialClientApplication:
         if self._app is None:
             self._app = msal.ConfidentialClientApplication(
                 client_id=self._client_id,
-                client_credential=self._client_secret,
+                client_credential=self._resolve_credential(),
                 authority=self._authority,
             )
         return self._app

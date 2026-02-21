@@ -20,8 +20,10 @@ class EventRepository:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
-    async def create_event(self, job: Any) -> int:
+    async def create_event(self, job: Any) -> Optional[int]:
         """Insert a new event from a queue job and return the row id.
+
+        Returns ``None`` if the event already exists (duplicate).
 
         ``job`` must expose attributes: event_id, operation, user_id,
         object_id, item_type, and optionally workload, file_name,
@@ -46,6 +48,7 @@ class EventRepository:
                     $10, $11, $12,
                     $13, $14, $15, $16
                 )
+                ON CONFLICT (event_id) DO NOTHING
                 RETURNING id
                 """,
                 getattr(job, "event_id", ""),
@@ -60,11 +63,14 @@ class EventRepository:
                 getattr(job, "sharing_type", None),
                 getattr(job, "sharing_scope", None),
                 getattr(job, "sharing_permission", None),
-                getattr(job, "event_time", None),
+                getattr(job, "event_time", None) or None,
                 "processing",
                 datetime.now(timezone.utc),
                 raw,
             )
+            if row is None:
+                logger.info("Duplicate event_id=%s, skipping", getattr(job, "event_id", ""))
+                return None
             logger.info("Created event record id=%s event_id=%s", row["id"], getattr(job, "event_id", ""))
             return row["id"]
 
@@ -100,12 +106,18 @@ class EventRepository:
         allowed = {
             "confirmed_file_name", "file_size_bytes", "mime_type",
             "web_url", "sharing_link_url", "drive_id", "item_id_graph",
+            "sharing_links",
         }
+        jsonb_cols = {"sharing_links"}
         for col, val in metadata.items():
             if col not in allowed:
                 continue
-            sets.append(f"{col} = ${idx}")
-            params.append(val)
+            if col in jsonb_cols:
+                sets.append(f"{col} = ${idx}::jsonb")
+                params.append(json.dumps(val) if val is not None else None)
+            else:
+                sets.append(f"{col} = ${idx}")
+                params.append(val)
             idx += 1
 
         params.append(event_id)
@@ -269,6 +281,63 @@ class FileHashRepository:
                 """,
                 file_hash,
             )
+
+
+class UserProfileRepository:
+    """CRUD operations for the ``user_profiles`` table."""
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def get_cached(self, user_id: str, max_age_days: int = 7) -> Optional[Dict[str, Any]]:
+        """Return cached profile if fetched within *max_age_days*, else None."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM user_profiles
+                WHERE user_id = $1
+                  AND fetched_at > NOW() - make_interval(days => $2)
+                """,
+                user_id,
+                max_age_days,
+            )
+            return dict(row) if row else None
+
+    async def upsert(self, user_id: str, profile: Dict[str, Any]) -> None:
+        """Insert or update a user profile."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO user_profiles (
+                    user_id, display_name, job_title, department,
+                    mail, manager_name, photo_base64, fetched_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+                ON CONFLICT (user_id) DO UPDATE SET
+                    display_name = EXCLUDED.display_name,
+                    job_title = EXCLUDED.job_title,
+                    department = EXCLUDED.department,
+                    mail = EXCLUDED.mail,
+                    manager_name = EXCLUDED.manager_name,
+                    photo_base64 = EXCLUDED.photo_base64,
+                    updated_at = NOW(),
+                    fetched_at = NOW()
+                """,
+                user_id,
+                profile.get("display_name"),
+                profile.get("job_title"),
+                profile.get("department"),
+                profile.get("mail"),
+                profile.get("manager_name"),
+                profile.get("photo_base64"),
+            )
+
+    async def get_by_user_id(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Simple lookup with no staleness check."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM user_profiles WHERE user_id = $1", user_id
+            )
+            return dict(row) if row else None
 
 
 class AuditLogRepository:

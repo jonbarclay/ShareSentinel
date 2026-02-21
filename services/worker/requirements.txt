@@ -5,6 +5,7 @@ asyncpg>=0.29.0
 # Microsoft Graph API
 httpx>=0.25.0
 msal>=1.25.0
+cryptography>=42.0.0
 
 # Text extraction
 PyMuPDF>=1.23.0
@@ -22,7 +23,7 @@ pillow-heif>=0.13.0
 # AI providers
 anthropic>=0.37.0
 openai>=1.6.0
-google-generativeai>=0.3.0
+# Gemini uses httpx (already listed above) to call Vertex AI REST API directly
 
 # Utilities
 pydantic>=2.5.0

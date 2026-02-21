@@ -27,6 +27,7 @@ class AlertPayload:
     sharing_permission: str  # "View" or "Edit"
     event_time: str
     sharing_link_url: Optional[str] = None
+    sharing_links: Optional[List[Dict[str, str]]] = None
 
     # AI analysis results (None for folder shares and processing failures)
     sensitivity_rating: Optional[int] = None
@@ -35,6 +36,9 @@ class AlertPayload:
     confidence: Optional[str] = None
     recommendation: Optional[str] = None
     analysis_mode: Optional[str] = None  # "text", "multimodal", "filename_only"
+
+    # Remediation context (populated only for remediation_report)
+    permission_details: Optional[List[Dict[str, str]]] = None
 
     # Additional context
     filename_flagged: bool = False

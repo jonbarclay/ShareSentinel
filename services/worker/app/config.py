@@ -17,6 +17,8 @@ class Config:
     azure_tenant_id: str = ""
     azure_client_id: str = ""
     azure_client_secret: str = ""
+    azure_certificate_path: str = ""
+    azure_certificate_password: str = ""
 
     # AI Provider
     ai_provider: str = "anthropic"
@@ -26,6 +28,8 @@ class Config:
     openai_model: str = "gpt-4o"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
+    vertex_project: str = ""
+    vertex_location: str = "us-central1"
     ai_temperature: float = 0.0
     ai_max_tokens: int = 1024
 
@@ -55,6 +59,13 @@ class Config:
     jira_project_key: str = ""
     jira_issue_type: str = "Task"
 
+    # Security / remediation
+    security_email: str = "security@uvu.edu"
+
+    # User profiles
+    user_profile_cache_days: int = 7
+    upn_domain: str = "uvu.edu"
+
     # Logging
     log_level: str = "INFO"
 
@@ -72,6 +83,8 @@ class Config:
             azure_tenant_id=os.environ.get("AZURE_TENANT_ID", ""),
             azure_client_id=os.environ.get("AZURE_CLIENT_ID", ""),
             azure_client_secret=os.environ.get("AZURE_CLIENT_SECRET", ""),
+            azure_certificate_path=os.environ.get("AZURE_CERTIFICATE", ""),
+            azure_certificate_password=os.environ.get("AZURE_CERTIFICATE_PASS", ""),
             ai_provider=os.environ.get("AI_PROVIDER", "anthropic"),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
             anthropic_model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929"),
@@ -79,6 +92,8 @@ class Config:
             openai_model=os.environ.get("OPENAI_MODEL", "gpt-4o"),
             gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
             gemini_model=os.environ.get("GEMINI_MODEL", "gemini-2.0-flash"),
+            vertex_project=os.environ.get("VERTEX_PROJECT", ""),
+            vertex_location=os.environ.get("VERTEX_LOCATION", "us-central1"),
             ai_temperature=float(os.environ.get("AI_TEMPERATURE", "0")),
             ai_max_tokens=int(os.environ.get("AI_MAX_TOKENS", "1024")),
             max_file_size_bytes=int(os.environ.get("MAX_FILE_SIZE_BYTES", "52428800")),
@@ -100,6 +115,9 @@ class Config:
             jira_api_token=os.environ.get("JIRA_API_TOKEN", ""),
             jira_project_key=os.environ.get("JIRA_PROJECT_KEY", ""),
             jira_issue_type=os.environ.get("JIRA_ISSUE_TYPE", "Task"),
+            security_email=os.environ.get("SECURITY_EMAIL", "security@uvu.edu"),
+            user_profile_cache_days=int(os.environ.get("USER_PROFILE_CACHE_DAYS", "7")),
+            upn_domain=os.environ.get("UPN_DOMAIN", "uvu.edu"),
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
             prompt_template_dir=os.environ.get("PROMPT_TEMPLATE_DIR", "config/prompt_templates"),
         )

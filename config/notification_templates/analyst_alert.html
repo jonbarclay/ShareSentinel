@@ -89,7 +89,19 @@
     <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Time</td>
     <td style="padding:4px 0;color:#172b4d;">{{ event_time }}</td>
   </tr>
-  {% if sharing_link_url %}
+  {% if sharing_links %}
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Sharing Links</td>
+    <td style="padding:4px 0;">
+      {% for link in sharing_links %}
+      <div style="margin-bottom:4px;">
+        <span style="display:inline-block;background-color:#deebff;color:#0052cc;padding:1px 6px;border-radius:4px;font-size:11px;font-weight:600;margin-right:4px;">{{ link.label }}</span>
+        <a href="{{ link.url }}" style="color:#0052cc;text-decoration:none;font-size:13px;word-break:break-all;">{{ link.url }}</a>
+      </div>
+      {% endfor %}
+    </td>
+  </tr>
+  {% elif sharing_link_url %}
   <tr>
     <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Sharing Link</td>
     <td style="padding:4px 0;"><a href="{{ sharing_link_url }}" style="color:#0052cc;text-decoration:none;">{{ sharing_link_url }}</a></td>
@@ -200,7 +212,11 @@
 {% endif %}
 </div>
 
-{% if sharing_link_url %}
+{% if sharing_links %}
+<div style="text-align:center;margin-bottom:20px;">
+  <a href="{{ sharing_links[0].url }}" style="display:inline-block;background-color:#0052cc;color:#ffffff;padding:10px 24px;border-radius:4px;text-decoration:none;font-weight:600;font-size:14px;">View Shared Item</a>
+</div>
+{% elif sharing_link_url %}
 <div style="text-align:center;margin-bottom:20px;">
   <a href="{{ sharing_link_url }}" style="display:inline-block;background-color:#0052cc;color:#ffffff;padding:10px 24px;border-radius:4px;text-decoration:none;font-weight:600;font-size:14px;">View Shared Item</a>
 </div>

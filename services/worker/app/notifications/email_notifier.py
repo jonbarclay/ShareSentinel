@@ -15,8 +15,23 @@ from .base_notifier import AlertPayload, BaseNotifier
 
 logger = logging.getLogger(__name__)
 
-# Default template location relative to project root
-_DEFAULT_TEMPLATE_DIR = Path(__file__).resolve().parents[4] / "config" / "notification_templates"
+# Default template location — /app/config in Docker, or walk up to find config/ locally
+def _find_template_dir() -> Path:
+    """Locate the notification_templates directory."""
+    # Docker: config is mounted at /app/config
+    docker_path = Path("/app/config/notification_templates")
+    if docker_path.is_dir():
+        return docker_path
+    # Local dev: walk up from this file to find config/
+    current = Path(__file__).resolve().parent
+    for _ in range(10):
+        candidate = current / "config" / "notification_templates"
+        if candidate.is_dir():
+            return candidate
+        current = current.parent
+    return Path("config/notification_templates")
+
+_DEFAULT_TEMPLATE_DIR = _find_template_dir()
 _DEFAULT_TEMPLATE_NAME = "analyst_alert.html"
 
 
@@ -86,6 +101,12 @@ class EmailNotifier(BaseNotifier):
                 f"[ShareSentinel] Folder Shared with {payload.sharing_type} "
                 f"Access - {payload.file_name}"
             )
+        elif payload.alert_type == "remediation_report":
+            rating = payload.sensitivity_rating or "?"
+            return (
+                f"[ShareSentinel] Sharing Link Removed - {payload.file_name} "
+                f"(Rating: {rating}/5)"
+            )
         elif payload.alert_type == "processing_failure":
             return f"[ShareSentinel] Processing Failed - {payload.file_name}"
         else:
@@ -109,6 +130,7 @@ class EmailNotifier(BaseNotifier):
             "high_sensitivity_file": "HIGH SENSITIVITY FILE DETECTED",
             "folder_share": "FOLDER SHARED WITH BROAD ACCESS",
             "processing_failure": "PROCESSING FAILURE",
+            "remediation_report": "SHARING LINK REMEDIATION REPORT",
         }
         lines.append(type_labels.get(payload.alert_type, "ALERT"))
         lines.append("")
@@ -132,7 +154,7 @@ class EmailNotifier(BaseNotifier):
         lines.append("")
 
         # AI analysis (only for file alerts)
-        if payload.alert_type == "high_sensitivity_file" and payload.sensitivity_rating is not None:
+        if payload.alert_type in ("high_sensitivity_file", "remediation_report") and payload.sensitivity_rating is not None:
             lines.append("AI ANALYSIS RESULTS")
             lines.append(f"  Sensitivity rating: {payload.sensitivity_rating}/5")
             if payload.categories_detected:
@@ -147,6 +169,12 @@ class EmailNotifier(BaseNotifier):
                 lines.append(f"  Analysis mode: {payload.analysis_mode}")
             if payload.was_sampled and payload.sampling_description:
                 lines.append(f"  Note: {payload.sampling_description}")
+            lines.append("")
+
+        # Remediation report
+        if payload.alert_type == "remediation_report":
+            lines.append("ACTION TAKEN")
+            lines.append("  Sharing permissions have been removed for this item.")
             lines.append("")
 
         # Failure reason

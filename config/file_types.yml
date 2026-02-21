@@ -38,6 +38,8 @@ excluded_extensions:
   - .dxf
   - .stl
   - .obj
+  # Calendar
+  - .ics
   # Font
   - .ttf
   - .otf

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 from pathlib import Path
 from typing import Any, Dict
@@ -75,11 +76,20 @@ class GraphClient:
         hostname = parsed.hostname or ""
         # Strip leading slash for the path portion
         path = parsed.path.rstrip("/")
-        return f"{hostname}:{path}" if path else hostname
+        return f"{hostname}:{path}:" if path else hostname
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _encode_sharing_url(url: str) -> str:
+        """Encode a sharing/file URL for the Graph ``/shares`` endpoint.
+
+        See https://learn.microsoft.com/en-us/graph/api/shares-get
+        """
+        encoded = base64.urlsafe_b64encode(url.encode()).decode()
+        return "u!" + encoded.rstrip("=")
 
     async def get_item_metadata(
         self,
@@ -92,43 +102,21 @@ class GraphClient:
     ) -> Dict[str, Any]:
         """Retrieve drive-item metadata from the Graph API.
 
-        The URL is constructed differently for OneDrive vs SharePoint:
-
-        * **OneDrive**: ``/users/{userId}/drive/root:/{path}/{name}``
-        * **SharePoint**: ``/sites/{siteId}/drive/root:/{path}/{name}``
+        Uses the ``/shares`` endpoint with the encoded ``object_id`` URL,
+        which works universally for OneDrive and SharePoint items.
 
         Returns the full JSON response dict from Graph.
 
         Raises ``FileNotFoundError`` (404) or ``AccessDeniedError`` (403).
         """
-        if workload and workload.lower() == "sharepoint" and site_url:
-            site_id = self._site_id_from_url(site_url)
-            base = f"{GRAPH_BASE}/sites/{site_id}/drive"
-        elif user_id:
-            base = f"{GRAPH_BASE}/users/{user_id}/drive"
-        else:
-            # Fallback: try parsing object_id as a URL
-            base = f"{GRAPH_BASE}/shares/u!{object_id}/driveItem"
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.get(base, headers=self._headers())
-                self._raise_for_status(resp)
-                return resp.json()
-
-        # Build the item path
-        parts = []
-        if relative_path:
-            parts.append(relative_path.strip("/"))
-        if file_name:
-            parts.append(file_name)
-
-        if parts:
-            item_path = "/".join(parts)
-            url = f"{base}/root:/{item_path}"
-        else:
-            url = f"{base}/root"
+        share_token = self._encode_sharing_url(object_id)
+        url = f"{GRAPH_BASE}/shares/{share_token}/driveItem"
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.get(url, headers=self._headers())
+            if resp.status_code == 400:
+                # Log the response body for debugging
+                logger.warning("Graph 400 response: %s", resp.text[:500])
             self._raise_for_status(resp)
             return resp.json()
 
@@ -161,3 +149,34 @@ class GraphClient:
 
         logger.info("Downloaded %s (%d bytes)", dest_path.name, dest_path.stat().st_size)
         return dest_path
+
+    async def get_user_profile(self, user_id: str) -> Dict[str, Any]:
+        """Fetch user profile from Graph API.
+
+        Returns dict with displayName, jobTitle, department, mail.
+        """
+        url = f"{GRAPH_BASE}/users/{user_id}?$select=displayName,jobTitle,department,mail"
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(url, headers=self._headers())
+            self._raise_for_status(resp)
+            return resp.json()
+
+    async def get_user_manager(self, user_id: str) -> Dict[str, Any] | None:
+        """Fetch user's manager from Graph API. Returns None on 404."""
+        url = f"{GRAPH_BASE}/users/{user_id}/manager"
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(url, headers=self._headers())
+            if resp.status_code == 404:
+                return None
+            self._raise_for_status(resp)
+            return resp.json()
+
+    async def get_user_photo(self, user_id: str) -> bytes | None:
+        """Fetch user's profile photo bytes. Returns None on 404."""
+        url = f"{GRAPH_BASE}/users/{user_id}/photo/$value"
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(url, headers=self._headers())
+            if resp.status_code == 404:
+                return None
+            self._raise_for_status(resp)
+            return resp.content

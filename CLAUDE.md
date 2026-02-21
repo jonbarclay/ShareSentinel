@@ -189,6 +189,18 @@ Files that are too large to download, are excluded types (video, audio, binaries
 - **Sensitivity threshold for alerts**: Rating of 4 or 5 (out of 5) triggers analyst notification.
 - **Excluded file types**: Video (.mp4, .mov, .avi, .mkv, .wmv), Audio (.mp3, .wav, .m4a, .aac, .flac), Binaries (.exe, .dll, .bin), and other non-document types defined in config/file_types.yml.
 
+## Development Workflow
+
+### Execute Code Inside Docker Containers Only
+All code execution, testing, and debugging MUST happen inside the Docker containers — never on the host machine directly. The services (worker, webhook-listener, dashboard) depend on Redis, PostgreSQL, and inter-service networking that are only available within the Docker Compose environment.
+
+- **Run scripts**: Use `docker exec` to run commands inside the appropriate container (e.g., `docker exec sharesentinel-worker python -m scripts.test_csv_pipeline --dry-run`).
+- **Enqueue test jobs**: Use `docker exec sharesentinel-redis redis-cli RPUSH sharesentinel:jobs '{...}'` to push jobs onto the Redis queue.
+- **View logs**: Use `docker compose logs -f <service>` to follow container logs.
+- **Database queries**: Use `docker exec sharesentinel-postgres psql -U sharesentinel -d sharesentinel -c "SELECT ..."`.
+- **Rebuild after code changes**: Use `docker compose up --build -d <service>` to rebuild and restart a specific service.
+- **Never install Python dependencies on the host** for running service code. The containers have their own isolated dependency sets.
+
 ## Environment and Authentication
 
 - **Microsoft Graph API**: Azure AD app registration with application permissions for Files.Read.All and Sites.Read.All. Uses client credentials flow (client_id + client_secret + tenant_id).

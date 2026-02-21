@@ -52,3 +52,32 @@ def extract_sharing_link(permissions: List[Dict[str, Any]]) -> Optional[str]:
                 logger.debug("Found sharing link scope=%s url=%s", scope, web_url)
                 return web_url
     return None
+
+
+def extract_all_sharing_links(
+    permissions: List[Dict[str, Any]],
+) -> List[Dict[str, str]]:
+    """Return all anonymous/org-wide sharing links with scope and permission labels.
+
+    Each entry: ``{"url": "...", "scope": "...", "type": "...", "label": "OrgEdit"}``.
+    """
+    results: List[Dict[str, str]] = []
+    for perm in permissions:
+        link = perm.get("link")
+        if not link:
+            continue
+        scope = link.get("scope", "").lower()
+        if scope not in ("anonymous", "organization"):
+            continue
+        web_url = link.get("webUrl")
+        if not web_url:
+            continue
+        link_type = link.get("type", "view").lower()
+        label = scope.capitalize() + link_type.capitalize()
+        results.append({
+            "url": web_url,
+            "scope": scope,
+            "type": link_type,
+            "label": label,
+        })
+    return results

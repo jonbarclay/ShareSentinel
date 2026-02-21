@@ -80,7 +80,7 @@ class AnthropicProvider(BaseAIProvider):
         except Exception as exc:
             logger.exception("Anthropic analysis failed")
             return AnalysisResponse(
-                sensitivity_rating=0,
+                sensitivity_rating=1,
                 categories_detected=[],
                 summary="",
                 confidence="",

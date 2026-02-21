@@ -9,9 +9,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from ..database.repositories import AuditLogRepository, EventRepository
+from ..config import Config
+from ..database.repositories import AuditLogRepository, EventRepository, UserProfileRepository
 from ..graph_api.client import GraphClient
-from ..graph_api.sharing import extract_sharing_link, get_sharing_permissions
+from ..graph_api.sharing import extract_all_sharing_links, extract_sharing_link, get_sharing_permissions
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,8 @@ class MetadataPrescreen:
         graph_client: GraphClient,
         event_repo: EventRepository,
         audit_repo: AuditLogRepository,
+        user_profile_cache_days: int = 7,
+        upn_domain: str = "uvu.edu",
     ) -> Dict[str, Any]:
         """Call Graph API for item metadata, update the event record, and return the metadata dict.
 
@@ -103,8 +106,9 @@ class MetadataPrescreen:
             (raw.get("lastModifiedBy") or {}).get("user") or {}
         ).get("displayName", "")
 
-        # 2. Get sharing link
+        # 2. Get sharing link(s)
         sharing_link_url: Optional[str] = None
+        sharing_links: Optional[List[Dict[str, Any]]] = None
         if drive_id and item_id:
             try:
                 permissions = await get_sharing_permissions(
@@ -113,6 +117,7 @@ class MetadataPrescreen:
                     item_id=item_id,
                 )
                 sharing_link_url = extract_sharing_link(permissions)
+                sharing_links = extract_all_sharing_links(permissions)
             except Exception:
                 logger.warning(
                     "Failed to retrieve sharing permissions for event_id=%s",
@@ -138,6 +143,7 @@ class MetadataPrescreen:
             "mime_type": mime_type,
             "web_url": web_url,
             "sharing_link_url": sharing_link_url,
+            "sharing_links": sharing_links,
             "drive_id": drive_id,
             "item_id_graph": item_id,
         }
@@ -156,7 +162,21 @@ class MetadataPrescreen:
             },
         )
 
-        # 6. Build and return enriched metadata
+        # 6. Enrich user profile (non-blocking)
+        user_id = getattr(job, "user_id", "")
+        if user_id:
+            profile_repo = UserProfileRepository(event_repo._pool)
+            await self.enrich_user_profile(
+                user_id=user_id,
+                graph_client=graph_client,
+                profile_repo=profile_repo,
+                audit_repo=audit_repo,
+                event_id=event_id,
+                cache_days=user_profile_cache_days,
+                upn_domain=upn_domain,
+            )
+
+        # 7. Build and return enriched metadata
         return {
             "name": name,
             "size": size,
@@ -168,9 +188,84 @@ class MetadataPrescreen:
             "created_by": created_by,
             "modified_by": modified_by,
             "sharing_link_url": sharing_link_url,
+            "sharing_links": sharing_links,
             "filename_flagged": filename_flagged,
             "filename_matched_keywords": matched_keywords,
         }
+
+    async def enrich_user_profile(
+        self,
+        user_id: str,
+        graph_client: GraphClient,
+        profile_repo: UserProfileRepository,
+        audit_repo: AuditLogRepository,
+        event_id: str | None = None,
+        cache_days: int = 7,
+        upn_domain: str = "uvu.edu",
+    ) -> None:
+        """Fetch and cache user profile from Graph API.
+
+        Non-blocking: failures are logged but never propagate.
+        If *user_id* is a bare ID (no '@'), appends ``@{upn_domain}``
+        for Graph API calls while storing the original ID in the DB.
+        """
+        try:
+            cached = await profile_repo.get_cached(user_id, max_age_days=cache_days)
+            if cached:
+                logger.debug("User profile cache hit for %s", user_id)
+                return
+
+            # Build UPN for Graph API if user_id is bare
+            upn = user_id if "@" in user_id else f"{user_id}@{upn_domain}"
+
+            # Fetch profile
+            raw = await graph_client.get_user_profile(upn)
+            profile: Dict[str, Any] = {
+                "display_name": raw.get("displayName"),
+                "job_title": raw.get("jobTitle"),
+                "department": raw.get("department"),
+                "mail": raw.get("mail"),
+            }
+
+            # Fetch manager (graceful 404)
+            try:
+                mgr = await graph_client.get_user_manager(upn)
+                profile["manager_name"] = mgr.get("displayName") if mgr else None
+            except Exception:
+                logger.debug("Could not fetch manager for %s", upn, exc_info=True)
+                profile["manager_name"] = None
+
+            # Fetch photo (graceful 404), resize to 96x96
+            try:
+                photo_bytes = await graph_client.get_user_photo(upn)
+                if photo_bytes:
+                    import base64
+                    import io
+                    from PIL import Image
+
+                    img = Image.open(io.BytesIO(photo_bytes))
+                    img = img.convert("RGB")
+                    img.thumbnail((96, 96))
+                    buf = io.BytesIO()
+                    img.save(buf, format="JPEG", quality=85)
+                    profile["photo_base64"] = base64.b64encode(buf.getvalue()).decode()
+                else:
+                    profile["photo_base64"] = None
+            except Exception:
+                logger.debug("Could not fetch photo for %s", user_id, exc_info=True)
+                profile["photo_base64"] = None
+
+            await profile_repo.upsert(user_id, profile)
+
+            await audit_repo.log(
+                event_id=event_id,
+                action="user_profile_enriched",
+                details={"user_id": user_id, "display_name": profile.get("display_name")},
+            )
+            logger.info("Enriched user profile for %s", user_id)
+
+        except Exception:
+            logger.warning("User profile enrichment failed for %s", user_id, exc_info=True)
 
     @staticmethod
     def check_filename_keywords(

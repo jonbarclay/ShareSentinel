@@ -75,7 +75,7 @@ RATING SCALE:
 1 = No sensitive information detected. File appears safe for broad sharing.
 2 = Minor sensitivity. Contains some personal information but unlikely to cause harm (e.g., a shared contact list with only names and work emails).
 3 = Moderate sensitivity. Contains information that is somewhat sensitive but may be acceptable for org-wide sharing depending on context (e.g., a project budget without salary details).
-4 = High sensitivity. Contains information that should NOT be shared broadly. Analyst should review and likely contact the user (e.g., a spreadsheet with employee home addresses, a document with student grades).
+4 = High sensitivity. Contains information that should NOT be shared broadly. Analyst should review and likely contact the user (e.g., a spreadsheet with employee home addresses, a document with student grades). IMPORTANT: Any file containing FERPA-protected student records (names + grades, schedules, disciplinary records, student IDs) or HIPAA-protected health information MUST be rated 4 or higher, even if the data seems minor.
 5 = Critical sensitivity. Contains highly sensitive PII or information that could cause significant harm (e.g., tax returns, medical records, SSN lists, passwords). Requires immediate analyst attention.
 
 ### MODE: multimodal ###
@@ -151,7 +151,7 @@ RATING SCALE:
 1 = No sensitive information detected. File appears safe for broad sharing.
 2 = Minor sensitivity. Contains some personal information but unlikely to cause harm (e.g., a shared contact list with only names and work emails).
 3 = Moderate sensitivity. Contains information that is somewhat sensitive but may be acceptable for org-wide sharing depending on context (e.g., a project budget without salary details).
-4 = High sensitivity. Contains information that should NOT be shared broadly. Analyst should review and likely contact the user (e.g., a spreadsheet with employee home addresses, a document with student grades).
+4 = High sensitivity. Contains information that should NOT be shared broadly. Analyst should review and likely contact the user (e.g., a spreadsheet with employee home addresses, a document with student grades). IMPORTANT: Any file containing FERPA-protected student records (names + grades, schedules, disciplinary records, student IDs) or HIPAA-protected health information MUST be rated 4 or higher, even if the data seems minor.
 5 = Critical sensitivity. Contains highly sensitive PII or information that could cause significant harm (e.g., tax returns, medical records, SSN lists, passwords). Requires immediate analyst attention.
 
 ### MODE: filename_only ###

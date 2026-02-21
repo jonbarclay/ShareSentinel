@@ -38,6 +38,12 @@ docker-compose.override.yml
 htmlcov/
 .tox/
 
+# Certificates
+*.pfx
+
+# Test data
+test_data.csv
+
 # Temporary files
 /tmp/
 *.tmp

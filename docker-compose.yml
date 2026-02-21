@@ -50,6 +50,8 @@ services:
       - AZURE_TENANT_ID=${AZURE_TENANT_ID}
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
       - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+      - AZURE_CERTIFICATE=/app/certs/JonPnPCert.pfx
+      - AZURE_CERTIFICATE_PASS=${AZURE_CERTIFICATE_PASS}
 
       # AI Provider
       - AI_PROVIDER=${AI_PROVIDER:-anthropic}
@@ -59,6 +61,8 @@ services:
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
+      - VERTEX_PROJECT=${VERTEX_PROJECT:-windmill-480721}
+      - VERTEX_LOCATION=${VERTEX_LOCATION:-us-central1}
       - AI_TEMPERATURE=${AI_TEMPERATURE:-0}
       - AI_MAX_TOKENS=${AI_MAX_TOKENS:-1024}
 
@@ -80,6 +84,9 @@ services:
       - EMAIL_FROM=${EMAIL_FROM}
       - EMAIL_TO=${EMAIL_TO}
 
+      # Security / remediation
+      - SECURITY_EMAIL=${SECURITY_EMAIL:-security@uvu.edu}
+
       # Jira (Phase 2)
       - JIRA_URL=${JIRA_URL}
       - JIRA_EMAIL=${JIRA_EMAIL}
@@ -91,6 +98,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - ./config:/app/config:ro
+      - ${AZURE_CERTIFICATE:-./JonPnPCert.pfx}:/app/certs/JonPnPCert.pfx:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -99,6 +107,33 @@ services:
     restart: unless-stopped
     networks:
       - sharesentinel
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  dashboard:
+    build:
+      context: ./services/dashboard
+      dockerfile: Dockerfile
+    container_name: sharesentinel-dashboard
+    ports:
+      - "${DASHBOARD_HOST_PORT:-8080}:8080"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-sharesentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharesentinel}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - sharesentinel
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     logging:
       driver: json-file
       options:

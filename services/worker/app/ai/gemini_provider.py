@@ -1,12 +1,12 @@
-"""Google Gemini provider implementation."""
+"""Google Gemini provider implementation via Vertex AI REST API."""
 
-import io
+import base64
+import json
 import logging
 import time
-from typing import Dict, List
+from typing import Any, Dict, List
 
-import google.generativeai as genai
-from PIL import Image
+import httpx
 
 from .base_provider import AnalysisRequest, AnalysisResponse, BaseAIProvider
 from .prompt_manager import SYSTEM_PROMPT, PromptManager
@@ -16,55 +16,71 @@ logger = logging.getLogger(__name__)
 
 
 class GeminiProvider(BaseAIProvider):
-    """AI provider backed by the Google Generative AI (Gemini) SDK."""
+    """AI provider backed by Google Gemini via the Vertex AI REST API with API key auth."""
 
-    # Pricing per 1M tokens (update as pricing changes)
     PRICING: Dict[str, Dict[str, float]] = {
         "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
         "gemini-2.5-pro-preview-05-06": {"input": 1.25, "output": 10.00},
+        "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
     }
 
     def __init__(
         self,
-        api_key: str,
+        api_key: str = "",
         model: str = "gemini-2.0-flash",
         prompt_manager: PromptManager | None = None,
         max_tokens: int = 1024,
         temperature: float = 0,
+        project: str = "",
+        location: str = "us-central1",
     ) -> None:
-        genai.configure(api_key=api_key)
-        self.genai_model = genai.GenerativeModel(
-            model,
-            system_instruction=SYSTEM_PROMPT,
-            generation_config=genai.GenerationConfig(
-                temperature=temperature,
-                max_output_tokens=max_tokens,
-                response_mime_type="application/json",
-            ),
+        self._base_url = (
+            f"https://{location}-aiplatform.googleapis.com/v1/"
+            f"projects/{project}/locations/{location}/publishers/google/models"
         )
+        self._api_key = api_key
         self.model_name = model
+        self.max_tokens = max_tokens
+        self.temperature = temperature
         self.prompt_manager = prompt_manager or PromptManager()
-
-    # ------------------------------------------------------------------
-    # BaseAIProvider interface
-    # ------------------------------------------------------------------
+        self._http = httpx.AsyncClient(timeout=120)
 
     async def analyze(self, request: AnalysisRequest) -> AnalysisResponse:
         start_time = time.time()
         try:
-            parts = self._build_parts(request)
+            contents = self._build_contents(request)
 
-            response = await self.genai_model.generate_content_async(parts)
+            body: Dict[str, Any] = {
+                "contents": contents,
+                "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                "generationConfig": {
+                    "temperature": self.temperature,
+                    "maxOutputTokens": self.max_tokens,
+                    "responseMimeType": "application/json",
+                },
+            }
+
+            url = f"{self._base_url}/{self.model_name}:generateContent?key={self._api_key}"
+            resp = await self._http.post(url, json=body)
+            resp.raise_for_status()
+            data = resp.json()
 
             processing_time = time.time() - start_time
 
-            raw_text = response.text or ""
+            # Extract text from response
+            raw_text = ""
+            candidates = data.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts:
+                    raw_text = parts[0].get("text", "")
+
             parsed = parse_ai_response(raw_text)
 
-            # Extract token counts from usage metadata
-            usage = getattr(response, "usage_metadata", None)
-            input_tokens = getattr(usage, "prompt_token_count", 0) or 0
-            output_tokens = getattr(usage, "candidates_token_count", 0) or 0
+            # Extract token counts
+            usage = data.get("usageMetadata", {})
+            input_tokens = usage.get("promptTokenCount", 0)
+            output_tokens = usage.get("candidatesTokenCount", 0)
             cost = self._calculate_cost(input_tokens, output_tokens)
 
             return AnalysisResponse(
@@ -84,7 +100,7 @@ class GeminiProvider(BaseAIProvider):
         except Exception as exc:
             logger.exception("Gemini analysis failed")
             return AnalysisResponse(
-                sensitivity_rating=0,
+                sensitivity_rating=1,
                 categories_detected=[],
                 summary="",
                 confidence="",
@@ -106,28 +122,25 @@ class GeminiProvider(BaseAIProvider):
     def get_model_name(self) -> str:
         return self.model_name
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _build_parts(self, request: AnalysisRequest) -> List:
-        """Build the content parts for the Gemini API.
-
-        For multimodal requests, images are converted to PIL Image objects
-        which the Gemini SDK accepts natively.
-        """
+    def _build_contents(self, request: AnalysisRequest) -> List[Dict]:
+        """Build the contents array for the Vertex AI REST API."""
         user_prompt = self.prompt_manager.render(request)
         parts: list = []
 
         if request.mode == "multimodal" and request.images:
-            for img_bytes in request.images:
-                pil_image = Image.open(io.BytesIO(img_bytes))
-                parts.append(pil_image)
-            parts.append(user_prompt)
+            mime_types = request.image_mime_types or ["image/jpeg"] * len(request.images)
+            for img_bytes, mime_type in zip(request.images, mime_types):
+                parts.append({
+                    "inlineData": {
+                        "mimeType": mime_type,
+                        "data": base64.b64encode(img_bytes).decode("utf-8"),
+                    }
+                })
+            parts.append({"text": user_prompt})
         else:
-            parts.append(user_prompt)
+            parts.append({"text": user_prompt})
 
-        return parts
+        return [{"role": "user", "parts": parts}]
 
     def _calculate_cost(self, input_tokens: int, output_tokens: int) -> float:
         pricing = self.PRICING.get(self.model_name, {"input": 0, "output": 0})
