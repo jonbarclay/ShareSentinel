@@ -1,52 +1,50 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { apiFetch } from "../api/client";
 import StatsCard from "../components/StatsCard";
 import EventTable from "../components/EventTable";
+import "./Dashboard.css";
 
 interface Stats {
   events: { total: number; completed: number; processing: number; failed: number };
-  verdicts: { total_verdicts: number; avg_rating: number | null; high_risk: number; reviewed: number; total_cost: number | null };
-  recent_high_risk: Array<Record<string, unknown>>;
+  verdicts: { total_verdicts: number; escalated: number; tier_1_count: number; tier_2_count: number; reviewed: number; unreviewed_escalated: number; unreviewed_tier_1: number; total_cost: number | null };
+  needs_review: Array<Record<string, unknown>>;
 }
 
 export default function Dashboard() {
+  const nav = useNavigate();
   const [stats, setStats] = useState<Stats | null>(null);
-  const [recent, setRecent] = useState<Array<Record<string, unknown>>>([]);
-
   useEffect(() => {
     apiFetch<Stats>("/stats").then(setStats);
-    apiFetch<{ events: Array<Record<string, unknown>> }>("/events?per_page=10").then(
-      (d) => setRecent(d.events)
-    );
     const id = setInterval(() => {
       apiFetch<Stats>("/stats").then(setStats);
-      apiFetch<{ events: Array<Record<string, unknown>> }>("/events?per_page=10").then(
-        (d) => setRecent(d.events)
-      );
     }, 10_000);
     return () => clearInterval(id);
   }, []);
 
-  if (!stats) return <div>Loading...</div>;
+  if (!stats) return <div className="loading-state">Loading dashboard data...</div>;
 
   const v = stats.verdicts;
   return (
-    <div>
-      <h2 style={{ marginBottom: "1rem" }}>Dashboard</h2>
-      <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: "1.5rem" }}>
-        <StatsCard label="Total Events" value={stats.events.total} />
-        <StatsCard label="Completed" value={stats.events.completed} />
-        <StatsCard label="Processing" value={stats.events.processing} />
-        <StatsCard label="Failed" value={stats.events.failed} />
-        <StatsCard label="High Risk (4-5)" value={v.high_risk ?? 0} />
-        <StatsCard label="Avg Rating" value={v.avg_rating?.toFixed(1) ?? "—"} />
-        <StatsCard label="Reviewed" value={v.reviewed ?? 0} />
+    <div className="dashboard-container">
+      <h2 className="page-title">Dashboard Overview</h2>
+
+      <div className="stats-grid">
+        <StatsCard label="Needs Review" value={v.unreviewed_escalated ?? 0} onClick={() => nav("/events?tier=escalated&hide_reviewed=1")} />
+        <StatsCard label="Urgent Unreviewed" value={v.unreviewed_tier_1 ?? 0} onClick={() => nav("/events?tier=tier_1&hide_reviewed=1")} />
+        <StatsCard label="Total Events" value={stats.events.total} onClick={() => nav("/events")} />
+        <StatsCard label="Completed" value={stats.events.completed} onClick={() => nav("/events?status=completed")} />
+        <StatsCard label="Processing" value={stats.events.processing} onClick={() => nav("/events?status=processing")} />
+        <StatsCard label="Failed" value={stats.events.failed} onClick={() => nav("/events?status=failed")} />
+        <StatsCard label="Reviewed" value={v.reviewed ?? 0} sub={`of ${v.total_verdicts ?? 0}`} onClick={() => nav("/events?reviewed=true")} />
         <StatsCard label="Total AI Cost" value={`$${(v.total_cost ?? 0).toFixed(2)}`} />
       </div>
 
-      <h3 style={{ marginBottom: "0.5rem" }}>Recent Events</h3>
-      {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-      <EventTable events={recent as any} />
+      <div className="recent-events-section card">
+        <h3 className="section-title">Needs Review</h3>
+        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+        <EventTable events={stats.needs_review as any} />
+      </div>
     </div>
   );
 }

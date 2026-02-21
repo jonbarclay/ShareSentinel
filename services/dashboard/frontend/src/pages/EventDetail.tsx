@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { apiFetch } from "../api/client";
-import VerdictBadge from "../components/VerdictBadge";
+import { TierBadge } from "../components/VerdictBadge";
 import AnalystReviewForm from "../components/AnalystReviewForm";
 import UserProfileCard from "../components/UserProfileCard";
 import { uvu, card } from "../theme";
@@ -67,6 +67,25 @@ export default function EventDetail() {
       </button>
       <h2 style={{ marginBottom: "1rem", fontWeight: 700 }}>Event: {String(e.file_name || e.event_id)}</h2>
 
+      {v && Boolean(v.analyst_disposition) && (
+        <div style={{
+          padding: "12px 16px",
+          marginBottom: "1rem",
+          borderRadius: 8,
+          background: v.analyst_disposition === "true_positive" ? "#fce8e4" :
+                       v.analyst_disposition === "false_positive" ? "#e3fcef" : "#fff3cd",
+          color: v.analyst_disposition === "true_positive" ? "#c92a2a" :
+                 v.analyst_disposition === "false_positive" ? "#00875a" : "#856404",
+          fontWeight: 700,
+          textTransform: "uppercase",
+          letterSpacing: "0.03em",
+          border: `1px solid ${v.analyst_disposition === "true_positive" ? "#f5c6cb" :
+                   v.analyst_disposition === "false_positive" ? "#c3e6cb" : "#ffeeba"}`
+        }}>
+          Analyst Review: {String(v.analyst_disposition).replace("_", " ")}
+        </div>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
         <div style={card}>
           <h3 style={{ marginBottom: "1rem", fontSize: "0.95rem", fontWeight: 600 }}>Event Details</h3>
@@ -129,14 +148,31 @@ export default function EventDetail() {
           <div style={card}>
             <h3 style={{ marginBottom: "1rem", fontSize: "0.95rem", fontWeight: 600 }}>AI Verdict</h3>
             <div style={{ marginBottom: 10 }}>
-              <VerdictBadge rating={v.sensitivity_rating as number} />
+              <TierBadge tier={v.escalation_tier as string | null} />
             </div>
-            <Field label="Confidence" value={v.confidence} />
+            <Field label="Context" value={v.overall_context} />
             <Field label="Analysis Mode" value={v.analysis_mode} />
             <Field label="Provider" value={`${v.ai_provider} / ${v.ai_model}`} />
             <Field label="Tokens" value={`${v.input_tokens} in / ${v.output_tokens} out`} />
             <Field label="Cost" value={`$${Number(v.estimated_cost_usd ?? 0).toFixed(4)}`} />
             <Field label="Latency" value={`${Number(v.processing_time_seconds ?? 0).toFixed(2)}s`} />
+            {(() => {
+              const cats: Array<{id: string; confidence: string; evidence?: string}> =
+                Array.isArray(v.category_assessments) ? v.category_assessments :
+                typeof v.category_assessments === "string" ? (() => { try { return JSON.parse(v.category_assessments as string); } catch { return []; } })() : [];
+              return cats.length > 0 ? (
+                <div style={{ marginTop: 10 }}>
+                  <div style={labelCss}>Detected Categories</div>
+                  {cats.map((cat, i) => (
+                    <div key={i} style={{ marginTop: 6, padding: "8px 10px", background: uvu.seaHaze, borderRadius: 6, fontSize: "0.85rem" }}>
+                      <span style={{ fontWeight: 600, color: uvu.greenD2 }}>{cat.id}</span>
+                      <span style={{ color: uvu.textMuted, marginLeft: 8, fontSize: "0.78rem" }}>({cat.confidence})</span>
+                      {cat.evidence && <div style={{ color: uvu.textSecondary, marginTop: 3, fontSize: "0.82rem" }}>{cat.evidence}</div>}
+                    </div>
+                  ))}
+                </div>
+              ) : null;
+            })()}
             <div style={{ marginTop: 10 }}>
               <div style={labelCss}>Summary</div>
               <p style={{ fontSize: "0.9rem", lineHeight: 1.5, color: uvu.text, marginTop: 3 }}>{String(v.summary ?? "—")}</p>

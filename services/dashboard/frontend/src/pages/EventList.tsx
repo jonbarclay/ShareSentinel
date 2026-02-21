@@ -2,38 +2,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { apiFetch } from "../api/client";
 import EventTable from "../components/EventTable";
-import { uvu } from "../theme";
-
-const inputStyle: React.CSSProperties = {
-  padding: "8px 12px",
-  border: `1px solid ${uvu.border}`,
-  borderRadius: 6,
-  fontSize: "0.85rem",
-  color: uvu.text,
-  background: uvu.surface,
-};
-
-const paginationBtn = (disabled: boolean): React.CSSProperties => ({
-  padding: "7px 18px",
-  border: `1px solid ${uvu.border}`,
-  borderRadius: 6,
-  background: disabled ? uvu.bg : uvu.surface,
-  cursor: disabled ? "default" : "pointer",
-  fontSize: "0.85rem",
-  color: disabled ? uvu.textMuted : uvu.text,
-  fontWeight: 500,
-});
-
-const toggleStyle = (active: boolean): React.CSSProperties => ({
-  padding: "8px 14px",
-  border: `1px solid ${active ? uvu.green : uvu.border}`,
-  borderRadius: 6,
-  fontSize: "0.85rem",
-  fontWeight: 500,
-  cursor: "pointer",
-  background: active ? `${uvu.green}18` : uvu.surface,
-  color: active ? uvu.green : uvu.text,
-});
+import "./EventList.css";
 
 export default function EventList() {
   const [params, setParams] = useSearchParams();
@@ -41,8 +10,12 @@ export default function EventList() {
   const page = Number(params.get("page") ?? 1);
   const statusFilter = params.get("status") ?? "";
   const userFilter = params.get("user") ?? "";
-  const ratingMin = params.get("rating_min") ?? "";
+  
+  const tierFilter = params.get("tier") ?? "";
+  const categoryFilter = params.get("category") ?? "";
+
   const hideReviewed = params.get("hide_reviewed") === "1";
+  const onlyReviewed = params.get("reviewed") === "true";
 
   useEffect(() => {
     const qs = new URLSearchParams();
@@ -50,10 +23,17 @@ export default function EventList() {
     qs.set("per_page", "50");
     if (statusFilter) qs.set("status", statusFilter);
     if (userFilter) qs.set("user", userFilter);
-    if (ratingMin) qs.set("rating_min", ratingMin);
-    if (hideReviewed) qs.set("reviewed", "false");
+    if (tierFilter) qs.set("tier", tierFilter);
+    if (categoryFilter) qs.set("category", categoryFilter);
+
+    if (onlyReviewed) {
+      qs.set("reviewed", "true");
+    } else if (hideReviewed) {
+      qs.set("reviewed", "false");
+    }
+
     apiFetch<typeof data>(`/events?${qs}`).then(setData);
-  }, [page, statusFilter, userFilter, ratingMin, hideReviewed]);
+  }, [page, statusFilter, userFilter, tierFilter, categoryFilter, hideReviewed, onlyReviewed]);
 
   const totalPages = Math.ceil(data.total / 50);
 
@@ -64,14 +44,14 @@ export default function EventList() {
   }
 
   return (
-    <div>
-      <h2 style={{ marginBottom: "1rem", fontWeight: 700 }}>Events ({data.total})</h2>
+    <div className="event-list-container">
+      <h2 className="page-title">Events ({data.total})</h2>
 
-      <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1rem", flexWrap: "wrap", alignItems: "center" }}>
+      <div className="filters-bar">
         <select
+          className="filter-select"
           value={statusFilter}
           onChange={(e) => setFilter("status", e.target.value)}
-          style={inputStyle}
         >
           <option value="">All statuses</option>
           <option value="completed">Completed</option>
@@ -80,45 +60,67 @@ export default function EventList() {
           <option value="remediated">Remediated</option>
         </select>
         <select
-          value={ratingMin}
-          onChange={(e) => setFilter("rating_min", e.target.value)}
-          style={inputStyle}
+          className="filter-select"
+          value={tierFilter}
+          onChange={(e) => setFilter("tier", e.target.value)}
         >
-          <option value="">Any rating</option>
-          <option value="4">4+ (High &amp; Critical)</option>
-          <option value="5">5 only (Critical)</option>
-          <option value="3">3+ (Medium and above)</option>
+          <option value="">All tiers</option>
+          <option value="escalated">Escalated (Tier 1 &amp; 2)</option>
+          <option value="tier_1">Tier 1 (Urgent)</option>
+          <option value="tier_2">Tier 2 (Normal)</option>
+          <option value="none">No Escalation</option>
+        </select>
+        <select
+          className="filter-select"
+          value={categoryFilter}
+          onChange={(e) => setFilter("category", e.target.value)}
+        >
+          <option value="">All categories</option>
+          <optgroup label="Tier 1 (Urgent)">
+            <option value="pii_government_id">Government PII</option>
+            <option value="pii_financial">Financial Data</option>
+            <option value="ferpa">FERPA Records</option>
+            <option value="hipaa">HIPAA Health Info</option>
+            <option value="security_credentials">Security Credentials</option>
+          </optgroup>
+          <optgroup label="Tier 2 (Normal)">
+            <option value="hr_personnel">HR/Personnel</option>
+            <option value="legal_confidential">Legal/Confidential</option>
+            <option value="pii_contact">Contact PII</option>
+          </optgroup>
         </select>
         <input
+          className="filter-input"
           placeholder="Filter by user..."
           value={userFilter}
           onChange={(e) => setFilter("user", e.target.value)}
-          style={{ ...inputStyle, width: 220 }}
         />
         <button
+          className={`filter-toggle ${hideReviewed ? "active" : ""}`}
           type="button"
           onClick={() => setFilter("hide_reviewed", hideReviewed ? "0" : "1")}
-          style={toggleStyle(hideReviewed)}
         >
           {hideReviewed ? "Showing unreviewed only" : "Hide reviewed"}
         </button>
       </div>
 
-      {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-      <EventTable events={data.events as any} />
+      <div className="table-wrapper card">
+        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+        <EventTable events={data.events as any} />
+      </div>
 
       {totalPages > 1 && (
-        <div style={{ marginTop: "1.25rem", display: "flex", gap: "0.5rem", justifyContent: "center", alignItems: "center" }}>
+        <div className="pagination-bar">
           <button
+            className="pagination-btn"
             disabled={page <= 1}
             onClick={() => { params.set("page", String(page - 1)); setParams(params); }}
-            style={paginationBtn(page <= 1)}
           >Prev</button>
-          <span style={{ fontSize: "0.85rem", color: uvu.textMuted, padding: "0 8px" }}>Page {page} / {totalPages}</span>
+          <span className="pagination-info">Page {page} / {totalPages}</span>
           <button
+            className="pagination-btn"
             disabled={page >= totalPages}
             onClick={() => { params.set("page", String(page + 1)); setParams(params); }}
-            style={paginationBtn(page >= totalPages)}
           >Next</button>
         </div>
       )}

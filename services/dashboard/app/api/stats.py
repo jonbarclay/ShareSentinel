@@ -25,9 +25,14 @@ async def get_stats(request: Request):
         verdict_stats = await conn.fetchrow("""
             SELECT
                 COUNT(*) AS total_verdicts,
-                AVG(sensitivity_rating)::FLOAT AS avg_rating,
-                COUNT(*) FILTER (WHERE sensitivity_rating >= 4) AS high_risk,
+                COUNT(*) FILTER (WHERE escalation_tier IN ('tier_1', 'tier_2')) AS escalated,
+                COUNT(*) FILTER (WHERE escalation_tier = 'tier_1') AS tier_1_count,
+                COUNT(*) FILTER (WHERE escalation_tier = 'tier_2') AS tier_2_count,
                 COUNT(*) FILTER (WHERE analyst_reviewed) AS reviewed,
+                COUNT(*) FILTER (WHERE escalation_tier IN ('tier_1', 'tier_2')
+                    AND NOT COALESCE(analyst_reviewed, FALSE)) AS unreviewed_escalated,
+                COUNT(*) FILTER (WHERE escalation_tier = 'tier_1'
+                    AND NOT COALESCE(analyst_reviewed, FALSE)) AS unreviewed_tier_1,
                 SUM(estimated_cost_usd)::FLOAT AS total_cost
             FROM verdicts
         """)
@@ -35,26 +40,40 @@ async def get_stats(request: Request):
             SELECT
                 ai_provider,
                 COUNT(*) AS count,
-                AVG(sensitivity_rating)::FLOAT AS avg_rating,
                 SUM(estimated_cost_usd)::FLOAT AS total_cost,
                 AVG(processing_time_seconds)::FLOAT AS avg_latency
             FROM verdicts
             GROUP BY ai_provider
             ORDER BY count DESC
         """)
-        by_rating = await conn.fetch("""
-            SELECT sensitivity_rating, COUNT(*) AS count
-            FROM verdicts
-            GROUP BY sensitivity_rating
-            ORDER BY sensitivity_rating
+        by_category = await conn.fetch("""
+            SELECT
+                cat_elem->>'id' AS category_id,
+                COUNT(*) AS count
+            FROM verdicts,
+                 jsonb_array_elements(category_assessments) AS cat_elem
+            WHERE category_assessments != '[]'::jsonb
+            GROUP BY cat_elem->>'id'
+            ORDER BY count DESC
         """)
-        recent_high = await conn.fetch("""
-            SELECT e.event_id, e.file_name, e.user_id, v.sensitivity_rating,
-                   v.summary, v.created_at
+        by_tier = await conn.fetch("""
+            SELECT escalation_tier, COUNT(*) AS count
+            FROM verdicts
+            WHERE escalation_tier IS NOT NULL
+            GROUP BY escalation_tier
+            ORDER BY count DESC
+        """)
+        recent_escalated = await conn.fetch("""
+            SELECT e.event_id, e.file_name, e.user_id,
+                   v.escalation_tier, v.category_assessments,
+                   v.summary, v.analyst_reviewed, v.created_at
             FROM verdicts v
             JOIN events e ON v.event_id = e.event_id
-            WHERE v.sensitivity_rating >= 4
-            ORDER BY v.created_at DESC
+            WHERE v.escalation_tier IN ('tier_1', 'tier_2')
+              AND NOT COALESCE(v.analyst_reviewed, FALSE)
+            ORDER BY
+              CASE v.escalation_tier WHEN 'tier_1' THEN 0 ELSE 1 END,
+              v.created_at DESC
             LIMIT 10
         """)
 
@@ -62,6 +81,7 @@ async def get_stats(request: Request):
         "events": dict(event_counts),
         "verdicts": dict(verdict_stats) if verdict_stats else {},
         "by_provider": [dict(r) for r in by_provider],
-        "by_rating": [dict(r) for r in by_rating],
-        "recent_high_risk": [dict(r) for r in recent_high],
+        "by_category": [dict(r) for r in by_category],
+        "by_tier": [dict(r) for r in by_tier],
+        "needs_review": [dict(r) for r in recent_escalated],
     }
