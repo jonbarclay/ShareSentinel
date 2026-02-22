@@ -43,3 +43,30 @@
   background: var(--uvu-critical);
   color: #ffffff;
 }
+
+.verdict-categories {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.category-chip {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  white-space: nowrap;
+}
+
+.category-chip.clickable {
+  cursor: pointer;
+  transition: transform 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease;
+}
+
+.category-chip.clickable:hover {
+  transform: translateY(-1px);
+  opacity: 0.9;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}

@@ -9,9 +9,9 @@ function Nav() {
   return (
     <nav className="top-nav glass-effect">
       <div className="nav-content">
-        <strong className="brand-logo">
+        <NavLink to="/" className="brand-logo" style={{ textDecoration: 'none' }} end>
           ShareSentinel
-        </strong>
+        </NavLink>
         <div className="nav-links">
           <NavLink to="/" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")} end>
             Dashboard

@@ -18,6 +18,7 @@ async def list_events(
     request: Request,
     status: Optional[str] = None,
     user: Optional[str] = None,
+    item_type: Optional[str] = None,
     since: Optional[str] = None,
     tier: Optional[str] = None,
     category: Optional[str] = None,
@@ -38,6 +39,10 @@ async def list_events(
         conditions.append(f"e.user_id ILIKE ${idx}")
         params.append(f"%{user}%")
         idx += 1
+    if item_type:
+        conditions.append(f"e.item_type = ${idx}")
+        params.append(item_type)
+        idx += 1
     if since:
         conditions.append(f"e.received_at > ${idx}")
         params.append(datetime.fromisoformat(since))
@@ -51,8 +56,7 @@ async def list_events(
             idx += 1
     if category is not None:
         conditions.append(f"v.category_assessments @> ${idx}::jsonb")
-        import json
-        params.append(json.dumps([{"id": category}]))
+        params.append([{"id": category}])
         idx += 1
     if reviewed is not None:
         conditions.append(f"COALESCE(v.analyst_reviewed, FALSE) = ${idx}")

@@ -62,6 +62,19 @@ class GraphClient:
         if response.status_code == 404:
             raise FileNotFoundError("Item not found", status_code=404)
         if response.status_code == 403:
+            # Microsoft returns 403 sharesAccessDenied with HRESULT
+            # 0x80070002 ("The system cannot find the file specified")
+            # when the shared item has been deleted.  Treat as not-found
+            # so the pipeline skips analysis instead of escalating.
+            try:
+                body = response.json()
+                msg = body.get("error", {}).get("message", "")
+                if "cannot find the file" in msg.lower() or "0x80070002" in msg:
+                    raise FileNotFoundError(
+                        f"Item no longer exists (403: {msg})", status_code=403,
+                    )
+            except (ValueError, KeyError):
+                pass
             raise AccessDeniedError("Access denied", status_code=403)
         response.raise_for_status()
 

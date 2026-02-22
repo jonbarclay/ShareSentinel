@@ -65,7 +65,11 @@ function categoryBarColor(catId: string): string {
 export default function Statistics() {
   const nav = useNavigate();
   const [stats, setStats] = useState<Stats | null>(null);
-  useEffect(() => { apiFetch<Stats>("/stats").then(setStats); }, []);
+  useEffect(() => {
+    apiFetch<Stats>("/stats").then(setStats);
+    const id = setInterval(() => { apiFetch<Stats>("/stats").then(setStats); }, 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   if (!stats) return <div>Loading...</div>;
 

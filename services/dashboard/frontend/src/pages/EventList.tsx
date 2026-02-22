@@ -10,6 +10,7 @@ export default function EventList() {
   const page = Number(params.get("page") ?? 1);
   const statusFilter = params.get("status") ?? "";
   const userFilter = params.get("user") ?? "";
+  const itemTypeFilter = params.get("item_type") ?? "";
   
   const tierFilter = params.get("tier") ?? "";
   const categoryFilter = params.get("category") ?? "";
@@ -18,22 +19,28 @@ export default function EventList() {
   const onlyReviewed = params.get("reviewed") === "true";
 
   useEffect(() => {
-    const qs = new URLSearchParams();
-    qs.set("page", String(page));
-    qs.set("per_page", "50");
-    if (statusFilter) qs.set("status", statusFilter);
-    if (userFilter) qs.set("user", userFilter);
-    if (tierFilter) qs.set("tier", tierFilter);
-    if (categoryFilter) qs.set("category", categoryFilter);
+    function fetchEvents() {
+      const qs = new URLSearchParams();
+      qs.set("page", String(page));
+      qs.set("per_page", "50");
+      if (statusFilter) qs.set("status", statusFilter);
+      if (userFilter) qs.set("user", userFilter);
+      if (itemTypeFilter) qs.set("item_type", itemTypeFilter);
+      if (tierFilter) qs.set("tier", tierFilter);
+      if (categoryFilter) qs.set("category", categoryFilter);
 
-    if (onlyReviewed) {
-      qs.set("reviewed", "true");
-    } else if (hideReviewed) {
-      qs.set("reviewed", "false");
+      if (onlyReviewed) {
+        qs.set("reviewed", "true");
+      } else if (hideReviewed) {
+        qs.set("reviewed", "false");
+      }
+
+      apiFetch<typeof data>(`/events?${qs}`).then(setData);
     }
-
-    apiFetch<typeof data>(`/events?${qs}`).then(setData);
-  }, [page, statusFilter, userFilter, tierFilter, categoryFilter, hideReviewed, onlyReviewed]);
+    fetchEvents();
+    const id = setInterval(fetchEvents, 30_000);
+    return () => clearInterval(id);
+  }, [page, statusFilter, userFilter, itemTypeFilter, tierFilter, categoryFilter, hideReviewed, onlyReviewed]);
 
   const totalPages = Math.ceil(data.total / 50);
 

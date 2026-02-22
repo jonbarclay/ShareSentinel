@@ -1,3 +1,4 @@
+import { useNavigate } from "react-router-dom";
 import "./VerdictBadge.css";
 
 const TIER_COLORS: Record<string, { bg: string; text: string }> = {
@@ -33,12 +34,19 @@ export default function VerdictBadge({
   tier: string | null;
   categories?: CategoryAssessment[] | null;
 }) {
+  const nav = useNavigate();
+
   if (!tier && !categories?.length)
     return <span className="verdict-na">N/A</span>;
 
   const effectiveTier = tier || "none";
   const colors = TIER_COLORS[effectiveTier] || TIER_COLORS.none;
   const cats = categories || [];
+
+  const handleCategoryClick = (e: React.MouseEvent, categoryId: string) => {
+    e.stopPropagation();
+    nav(`/events?category=${categoryId}`);
+  };
 
   return (
     <span className="verdict-categories">
@@ -48,9 +56,10 @@ export default function VerdictBadge({
         .map((c, i) => (
           <span
             key={i}
-            className="category-chip"
+            className="category-chip clickable"
             style={{ backgroundColor: colors.bg, color: colors.text }}
             title={c.evidence || c.id}
+            onClick={(e) => handleCategoryClick(e, c.id)}
           >
             {CATEGORY_LABELS[c.id] || c.id}
           </span>

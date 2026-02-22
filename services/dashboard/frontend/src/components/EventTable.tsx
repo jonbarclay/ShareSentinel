@@ -49,8 +49,28 @@ export default function EventTable({ events }: { events: Event[] }) {
               <td className="cell-filename" title={e.file_name ?? "—"}>
                 {e.file_name || "—"}
               </td>
-              <td title={e.user_id}>{e.user_display_name || e.user_id}</td>
-              <td className="cell-muted">{e.item_type}</td>
+              <td title={e.user_id}>
+                <span
+                  className="cell-clickable in-table"
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    nav(`/events?user=${e.user_id}`);
+                  }}
+                >
+                  {e.user_display_name || e.user_id}
+                </span>
+              </td>
+              <td className="cell-muted">
+                <span
+                  className="cell-clickable in-table"
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    nav(`/events?item_type=${e.item_type}`);
+                  }}
+                >
+                  {e.item_type}
+                </span>
+              </td>
               <td>
                 {e.status === "failed" ? (
                   <span className="status-badge failed" title={e.failure_reason ?? undefined}>Failed</span>
