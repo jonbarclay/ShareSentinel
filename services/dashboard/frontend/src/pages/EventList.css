@@ -1,0 +1,75 @@
+.event-list-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.filters-bar {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+  background: var(--uvu-surface);
+  padding: 1rem;
+  border-radius: var(--card-radius);
+  border: 1px solid var(--uvu-border);
+  box-shadow: var(--card-shadow);
+}
+
+.filter-select {
+  min-width: 140px;
+}
+
+.filter-input {
+  width: 240px;
+}
+
+.filter-toggle {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--uvu-border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  background: var(--uvu-surface);
+  color: var(--uvu-text);
+}
+
+.filter-toggle.active {
+  border-color: var(--uvu-green);
+  background: rgba(39, 93, 56, 0.08);
+  color: var(--uvu-green);
+}
+
+.table-wrapper {
+  overflow-x: auto;
+  padding: 0; /* Remove padding for flush table */
+}
+
+.pagination-bar {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+  align-items: center;
+  margin-top: 1rem;
+}
+
+.pagination-btn {
+  padding: 0.5rem 1.25rem;
+  border: 1px solid var(--uvu-border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  background: var(--uvu-surface);
+  color: var(--uvu-text);
+}
+
+.pagination-btn:disabled {
+  background: var(--uvu-bg);
+  color: var(--uvu-text-muted);
+}
+
+.pagination-info {
+  font-size: 0.85rem;
+  color: var(--uvu-text-muted);
+  padding: 0 0.5rem;
+}

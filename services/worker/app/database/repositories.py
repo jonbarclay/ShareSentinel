@@ -14,6 +14,24 @@ from ..ai.base_provider import AnalysisResponse
 logger = logging.getLogger(__name__)
 
 
+def _parse_event_time(value: Any) -> Optional[datetime]:
+    """Convert an event_time value to a datetime, or None."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        from datetime import timezone as _tz
+        try:
+            dt = datetime.fromisoformat(value)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=_tz.utc)
+            return dt
+        except ValueError:
+            return None
+    return None
+
+
 class EventRepository:
     """CRUD operations for the ``events`` table."""
 
@@ -63,7 +81,7 @@ class EventRepository:
                 getattr(job, "sharing_type", None),
                 getattr(job, "sharing_scope", None),
                 getattr(job, "sharing_permission", None),
-                getattr(job, "event_time", None) or None,
+                _parse_event_time(getattr(job, "event_time", None)),
                 "processing",
                 datetime.now(timezone.utc),
                 raw,
@@ -157,31 +175,46 @@ class VerdictRepository:
         notification_required: bool,
     ) -> int:
         """Insert an AI verdict and return the row id."""
-        categories = json.dumps(response.categories_detected)
+        from ..ai.base_provider import CategoryDetection
+        # Build category_assessments JSONB from the new categories list
+        category_assessments = json.dumps([
+            {"id": c.id, "confidence": c.confidence, "evidence": c.evidence}
+            for c in response.categories
+        ])
+        category_ids = [c.id for c in response.categories]
+        # Legacy categories_detected for backward compat
+        categories_detected_json = json.dumps(category_ids)
+
+        pii_types_json = json.dumps(response.pii_types_found) if response.pii_types_found else "[]"
 
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO verdicts (
-                    event_id, sensitivity_rating, categories_detected,
-                    summary, confidence, recommendation,
+                    event_id, categories_detected,
+                    category_assessments, overall_context, escalation_tier,
+                    summary, recommendation,
                     analysis_mode, ai_provider, ai_model,
                     input_tokens, output_tokens, estimated_cost_usd,
-                    processing_time_seconds, notification_required
+                    processing_time_seconds, notification_required,
+                    affected_count, pii_types_found
                 ) VALUES (
-                    $1, $2, $3::jsonb,
-                    $4, $5, $6,
-                    $7, $8, $9,
-                    $10, $11, $12,
-                    $13, $14
+                    $1, $2::jsonb,
+                    $3::jsonb, $4, $5,
+                    $6, $7,
+                    $8, $9, $10,
+                    $11, $12, $13,
+                    $14, $15,
+                    $16, $17::jsonb
                 )
                 RETURNING id
                 """,
                 event_id,
-                response.sensitivity_rating,
-                categories,
+                categories_detected_json,
+                category_assessments,
+                response.context,
+                response.escalation_tier,
                 response.summary,
-                response.confidence,
                 response.recommendation,
                 analysis_mode,
                 response.provider,
@@ -191,10 +224,12 @@ class VerdictRepository:
                 response.estimated_cost_usd,
                 response.processing_time_seconds,
                 notification_required,
+                response.affected_count,
+                pii_types_json,
             )
             logger.info(
-                "Created verdict id=%s event_id=%s rating=%s",
-                row["id"], event_id, response.sensitivity_rating,
+                "Created verdict id=%s event_id=%s tier=%s categories=%s",
+                row["id"], event_id, response.escalation_tier, category_ids,
             )
             return row["id"]
 
@@ -253,20 +288,22 @@ class FileHashRepository:
             )
             return dict(row) if row else None
 
-    async def store_hash(self, file_hash: str, event_id: str, sensitivity_rating: int) -> None:
-        """Insert a new file hash record."""
+    async def store_hash(
+        self, file_hash: str, event_id: str, category_ids: list[str],
+    ) -> None:
+        """Insert a new file hash record with category IDs."""
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO file_hashes (file_hash, first_event_id, sensitivity_rating)
-                VALUES ($1, $2, $3)
+                INSERT INTO file_hashes (file_hash, first_event_id, category_ids)
+                VALUES ($1, $2, $3::jsonb)
                 ON CONFLICT (file_hash) DO UPDATE
                     SET times_seen = file_hashes.times_seen + 1,
                         last_seen_at = NOW()
                 """,
                 file_hash,
                 event_id,
-                sensitivity_rating,
+                json.dumps(category_ids),
             )
 
     async def update_last_seen(self, file_hash: str) -> None:

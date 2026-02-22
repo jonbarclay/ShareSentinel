@@ -19,7 +19,8 @@ async def list_events(
     status: Optional[str] = None,
     user: Optional[str] = None,
     since: Optional[str] = None,
-    rating_min: Optional[int] = None,
+    tier: Optional[str] = None,
+    category: Optional[str] = None,
     reviewed: Optional[bool] = None,
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
@@ -41,9 +42,17 @@ async def list_events(
         conditions.append(f"e.received_at > ${idx}")
         params.append(datetime.fromisoformat(since))
         idx += 1
-    if rating_min is not None:
-        conditions.append(f"v.sensitivity_rating >= ${idx}")
-        params.append(rating_min)
+    if tier is not None:
+        if tier == "escalated":
+            conditions.append("v.escalation_tier IN ('tier_1', 'tier_2')")
+        else:
+            conditions.append(f"v.escalation_tier = ${idx}")
+            params.append(tier)
+            idx += 1
+    if category is not None:
+        conditions.append(f"v.category_assessments @> ${idx}::jsonb")
+        import json
+        params.append(json.dumps([{"id": category}]))
         idx += 1
     if reviewed is not None:
         conditions.append(f"COALESCE(v.analyst_reviewed, FALSE) = ${idx}")
@@ -62,7 +71,8 @@ async def list_events(
 
         rows = await conn.fetch(
             f"""
-            SELECT e.*, v.sensitivity_rating, v.confidence, v.analysis_mode,
+            SELECT e.*, v.escalation_tier, v.category_assessments,
+                   v.overall_context, v.analysis_mode,
                    v.ai_provider, v.analyst_reviewed, v.analyst_disposition,
                    up.display_name AS user_display_name
             FROM events e

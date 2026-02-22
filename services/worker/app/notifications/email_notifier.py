@@ -91,10 +91,15 @@ class EmailNotifier(BaseNotifier):
     @staticmethod
     def _build_subject(payload: AlertPayload) -> str:
         """Build the email subject line based on alert type."""
+        from ..ai.base_provider import CATEGORY_LABELS
         if payload.alert_type == "high_sensitivity_file":
+            tier_label = "URGENT" if payload.escalation_tier == "tier_1" else "Alert"
+            top_cat = ""
+            if payload.category_ids:
+                top_id = payload.category_ids[0]
+                top_cat = CATEGORY_LABELS.get(top_id, top_id)
             return (
-                f"[ShareSentinel] High Sensitivity File Detected "
-                f"(Rating: {payload.sensitivity_rating}/5) - {payload.file_name}"
+                f"[ShareSentinel] [{tier_label}] {top_cat} - {payload.file_name}"
             )
         elif payload.alert_type == "folder_share":
             return (
@@ -102,10 +107,10 @@ class EmailNotifier(BaseNotifier):
                 f"Access - {payload.file_name}"
             )
         elif payload.alert_type == "remediation_report":
-            rating = payload.sensitivity_rating or "?"
+            tier_label = payload.escalation_tier or "unknown"
             return (
                 f"[ShareSentinel] Sharing Link Removed - {payload.file_name} "
-                f"(Rating: {rating}/5)"
+                f"({tier_label})"
             )
         elif payload.alert_type == "processing_failure":
             return f"[ShareSentinel] Processing Failed - {payload.file_name}"
@@ -154,15 +159,19 @@ class EmailNotifier(BaseNotifier):
         lines.append("")
 
         # AI analysis (only for file alerts)
-        if payload.alert_type in ("high_sensitivity_file", "remediation_report") and payload.sensitivity_rating is not None:
+        if payload.alert_type in ("high_sensitivity_file", "remediation_report") and payload.categories:
+            from ..ai.base_provider import CATEGORY_LABELS
             lines.append("AI ANALYSIS RESULTS")
-            lines.append(f"  Sensitivity rating: {payload.sensitivity_rating}/5")
-            if payload.categories_detected:
-                lines.append(f"  Categories: {', '.join(payload.categories_detected)}")
+            lines.append(f"  Escalation tier: {payload.escalation_tier or 'none'}")
+            lines.append(f"  Context: {payload.context or 'unknown'}")
+            lines.append("  Detected categories:")
+            for cat in payload.categories:
+                label = CATEGORY_LABELS.get(cat.id, cat.id)
+                lines.append(f"    - {label} (confidence: {cat.confidence})")
+                if cat.evidence:
+                    lines.append(f"      Evidence: {cat.evidence}")
             if payload.summary:
                 lines.append(f"  Summary: {payload.summary}")
-            if payload.confidence:
-                lines.append(f"  Confidence: {payload.confidence}")
             if payload.recommendation:
                 lines.append(f"  Recommendation: {payload.recommendation}")
             if payload.analysis_mode:

@@ -168,6 +168,25 @@ async def execute_remediation(
 
     if to_addresses and config.smtp_host:
         file_size = event.get("file_size_bytes")
+        # Reconstruct CategoryDetection objects from stored JSONB
+        from ..ai.base_provider import CategoryDetection
+        cat_assessments = (verdict.get("category_assessments") or []) if verdict else []
+        if isinstance(cat_assessments, str):
+            import json as _json
+            try:
+                cat_assessments = _json.loads(cat_assessments)
+            except (ValueError, TypeError):
+                cat_assessments = []
+        recon_categories = [
+            CategoryDetection(
+                id=ca.get("id", "none"),
+                confidence=ca.get("confidence", "medium"),
+                evidence=ca.get("evidence", ""),
+            )
+            for ca in cat_assessments
+            if isinstance(ca, dict)
+        ]
+
         payload = AlertPayload(
             event_id=event_id,
             alert_type="remediation_report",
@@ -180,14 +199,10 @@ async def execute_remediation(
             sharing_permission=event.get("sharing_permission") or "Unknown",
             event_time=str(event.get("event_time") or event.get("received_at") or ""),
             sharing_link_url=event.get("sharing_link_url"),
-            sensitivity_rating=verdict["sensitivity_rating"] if verdict else None,
-            categories_detected=(
-                verdict["categories_detected"]
-                if verdict and verdict.get("categories_detected")
-                else None
-            ),
+            categories=recon_categories if recon_categories else None,
+            escalation_tier=verdict.get("escalation_tier") if verdict else None,
+            context=verdict.get("overall_context") if verdict else None,
             summary=verdict["summary"] if verdict else None,
-            confidence=verdict["confidence"] if verdict else None,
             recommendation=verdict["recommendation"] if verdict else None,
             analysis_mode=verdict["analysis_mode"] if verdict else None,
             permission_details=permission_details,

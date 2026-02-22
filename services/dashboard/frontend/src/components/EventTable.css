@@ -1,0 +1,115 @@
+.event-table-container {
+  width: 100%;
+  overflow-x: auto;
+  border-radius: var(--card-radius);
+  background: var(--uvu-surface);
+}
+
+.event-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.event-table th {
+  padding: 12px 16px;
+  border-bottom: 2px solid var(--uvu-border);
+  font-size: 0.75rem;
+  color: var(--uvu-text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--uvu-bg);
+  white-space: nowrap;
+}
+
+.event-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--uvu-divider);
+  font-size: 0.875rem;
+  color: var(--uvu-text);
+  vertical-align: middle;
+}
+
+.event-table tbody tr {
+  transition: background-color 0.15s ease;
+  cursor: pointer;
+}
+
+.event-table tbody tr:hover {
+  background-color: var(--uvu-hover);
+}
+
+.cell-filename {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--uvu-green-d2);
+}
+
+.cell-muted {
+  color: var(--uvu-text-secondary);
+}
+
+.cell-success {
+  color: var(--uvu-green);
+  font-weight: 500;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.status-badge.remediated {
+  background: rgba(135, 199, 186, 0.2); /* UVU Lake Calm tinted */
+  color: #0d826a;
+}
+
+.status-badge.failed {
+  background: rgba(222, 53, 11, 0.12);
+  color: #c92a2a;
+}
+
+.status-text {
+  color: var(--uvu-text-secondary);
+  text-transform: capitalize;
+  font-size: 0.85rem;
+}
+
+.analyst-flag {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.analyst-flag.true_positive {
+  background: #fce8e4;
+  color: #c92a2a;
+}
+
+.analyst-flag.false_positive {
+  background: #e3fcef;
+  color: #00875a;
+}
+
+.analyst-flag.moderate_risk, .analyst-flag.needs_investigation {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.analyst-flag.acceptable_risk {
+  background: #e2e8f0;
+  color: #334155;
+}

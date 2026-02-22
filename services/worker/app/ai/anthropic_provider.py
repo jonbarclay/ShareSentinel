@@ -64,10 +64,9 @@ class AnthropicProvider(BaseAIProvider):
             cost = self._calculate_cost(input_tokens, output_tokens)
 
             return AnalysisResponse(
-                sensitivity_rating=parsed["sensitivity_rating"],
-                categories_detected=parsed["categories_detected"],
+                categories=parsed["categories"],
+                context=parsed["context"],
                 summary=parsed["summary"],
-                confidence=parsed["confidence"],
                 recommendation=parsed["recommendation"],
                 raw_response=raw_text,
                 provider="anthropic",
@@ -76,14 +75,15 @@ class AnthropicProvider(BaseAIProvider):
                 output_tokens=output_tokens,
                 estimated_cost_usd=cost,
                 processing_time_seconds=processing_time,
+                affected_count=parsed.get("affected_count", 0),
+                pii_types_found=parsed.get("pii_types_found", []),
             )
         except Exception as exc:
             logger.exception("Anthropic analysis failed")
             return AnalysisResponse(
-                sensitivity_rating=1,
-                categories_detected=[],
+                categories=[],
+                context="mixed",
                 summary="",
-                confidence="",
                 recommendation="",
                 raw_response="",
                 provider="anthropic",

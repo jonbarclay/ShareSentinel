@@ -9,7 +9,15 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from ..ai.base_provider import AnalysisRequest, AnalysisResponse, BaseAIProvider
+from ..ai.base_provider import (
+    AnalysisRequest,
+    AnalysisResponse,
+    BaseAIProvider,
+    CategoryDetection,
+    TIER_1,
+    TIER_2,
+    apply_escalation_overrides,
+)
 from ..ai.prompt_manager import PromptManager, format_file_size
 from ..config import Config
 from ..database.repositories import (
@@ -253,14 +261,25 @@ async def process_job(
         reuse_match = await hasher.check_reuse(file_hash, file_hash_repo, config.hash_reuse_days)
         if reuse_match:
             logger.info("[%s] Step 7: Hash reuse match, previous_event=%s", event_id, reuse_match.get("first_event_id"))
-            reused_rating = reuse_match.get("sensitivity_rating", 1)
+            # Reconstruct categories from stored category_ids
+            from ..ai.base_provider import CategoryDetection
+            stored_cat_ids = reuse_match.get("category_ids") or []
+            if isinstance(stored_cat_ids, str):
+                import json as _json
+                try:
+                    stored_cat_ids = _json.loads(stored_cat_ids)
+                except (ValueError, TypeError):
+                    stored_cat_ids = []
+            reused_categories = [
+                CategoryDetection(id=cid, confidence="high", evidence="reused from previous analysis")
+                for cid in stored_cat_ids
+            ] if stored_cat_ids else []
 
             # Build a synthetic AnalysisResponse from the reused verdict
             analysis_response = AnalysisResponse(
-                sensitivity_rating=reused_rating,
-                categories_detected=[],
-                summary=f"Hash reuse: identical file previously analysed (event {reuse_match.get('first_event_id', 'unknown')}). Rating reused.",
-                confidence="high",
+                categories=reused_categories,
+                context="mixed",
+                summary=f"Hash reuse: identical file previously analysed (event {reuse_match.get('first_event_id', 'unknown')}). Categories reused.",
                 recommendation="See original verdict for full details.",
                 raw_response="",
                 provider="hash_reuse",
@@ -274,7 +293,7 @@ async def process_job(
             await audit_repo.log(event_id, "hash_reuse", {
                 "file_hash": file_hash,
                 "original_event_id": reuse_match.get("first_event_id"),
-                "reused_rating": reused_rating,
+                "reused_categories": [c.id for c in reused_categories],
             })
 
             await _record_and_notify(
@@ -315,13 +334,17 @@ async def process_job(
     except Exception:
         logger.exception("[%s] Pipeline failed with unhandled exception", event_id)
         try:
-            await event_repo.update_event_status(
-                event_id, "failed", failure_reason="unhandled_exception",
-            )
-            await audit_repo.log(
-                event_id, "pipeline_failed", status="error",
-                error="Unhandled exception in pipeline",
-            )
+            current = await _current_status(event_repo, event_id)
+            if current not in ("completed", "remediated"):
+                await event_repo.update_event_status(
+                    event_id, "failed", failure_reason="unhandled_exception",
+                )
+                await audit_repo.log(
+                    event_id, "pipeline_failed", status="error",
+                    error="Unhandled exception in pipeline",
+                )
+            else:
+                logger.warning("[%s] Suppressed status downgrade from '%s' to 'failed'", event_id, current)
         except Exception:
             logger.exception("[%s] Failed to update event status after error", event_id)
 
@@ -406,10 +429,9 @@ async def _handle_folder_share(
 
     # Synthetic response for folder shares
     response = AnalysisResponse(
-        sensitivity_rating=0,
-        categories_detected=["folder_share"],
+        categories=[],
+        context="institutional",
         summary=summary,
-        confidence="n/a",
         recommendation="Review folder contents and sharing permissions.",
         raw_response="",
         provider="system",
@@ -644,19 +666,21 @@ async def _run_ai_analysis(
 
     response = await retry_with_backoff(ai_provider.analyze, request)
 
+    cat_ids = [c.id for c in response.categories]
     await audit_repo.log(event_id, "ai_analysis_complete", {
         "provider": response.provider,
         "model": response.model,
-        "rating": response.sensitivity_rating,
-        "confidence": response.confidence,
+        "escalation_tier": response.escalation_tier,
+        "categories": cat_ids,
+        "context": response.context,
         "input_tokens": response.input_tokens,
         "output_tokens": response.output_tokens,
         "cost_usd": response.estimated_cost_usd,
         "duration_s": response.processing_time_seconds,
     })
     logger.info(
-        "[%s] Step 9: AI analysis complete rating=%d confidence=%s cost=$%.4f",
-        event_id, response.sensitivity_rating, response.confidence,
+        "[%s] Step 9: AI analysis complete tier=%s categories=%s cost=$%.4f",
+        event_id, response.escalation_tier, cat_ids,
         response.estimated_cost_usd,
     )
     return response
@@ -683,20 +707,63 @@ async def _record_and_notify(
 ) -> None:
     """Record the AI verdict, store file hash, notify if risky, and complete."""
 
-    # Escalate based on rating threshold OR regulated-data categories
-    ESCALATION_CATEGORIES = {"ferpa", "hipaa", "student", "academic records", "health information"}
-    category_escalation = any(
-        any(kw in cat.lower() for kw in ESCALATION_CATEGORIES)
-        for cat in response.categories_detected
+    # Deterministic escalation from category taxonomy
+    original_tier = response.escalation_tier
+    cat_ids = [c.id for c in response.categories]
+
+    # Apply post-processing overrides (coursework context, FERPA name
+    # linkage, student-path heuristic)
+    file_name = metadata.get("name", getattr(job, "file_name", "") or "")
+    override = apply_escalation_overrides(
+        base_tier=original_tier,
+        category_ids=response.category_ids,
+        context=response.context,
+        pii_types_found=response.pii_types_found,
+        file_name=file_name,
+        file_path=metadata.get("parent_path", ""),
+        site_url=getattr(job, "site_url", "") or "",
+        object_id=getattr(job, "object_id", "") or "",
     )
-    notification_required = (
-        response.sensitivity_rating >= config.sensitivity_threshold
-        or category_escalation
-    )
-    if category_escalation and response.sensitivity_rating < config.sensitivity_threshold:
+    escalation_tier = override.adjusted_tier
+    notification_required = escalation_tier in ("tier_1", "tier_2")
+
+    if override.applied:
         logger.info(
-            "[%s] Category-based escalation triggered: %s",
-            event_id, response.categories_detected,
+            "[%s] Escalation overridden: %s (base=%s -> %s)",
+            event_id, override.reason, original_tier, escalation_tier,
+        )
+        await audit_repo.log(event_id, "escalation_override", {
+            "reason": override.reason,
+            "original_tier": original_tier,
+            "adjusted_tier": escalation_tier,
+            "original_categories": cat_ids,
+            "replacement_category": override.replacement_category,
+            "context": response.context,
+            "pii_types_found": response.pii_types_found,
+        })
+
+        # Rewrite response categories so the stored verdict reflects the
+        # final determination, not the raw AI guess.  The original AI
+        # assessment is preserved in the audit log above.
+        escalating_ids = TIER_1 | TIER_2
+        replacement = override.replacement_category or "none"
+        new_categories = []
+        for cat in response.categories:
+            if cat.id in escalating_ids:
+                new_categories.append(CategoryDetection(
+                    id=replacement,
+                    confidence=cat.confidence,
+                    evidence=f"[Override: {override.reason}] {cat.evidence}",
+                ))
+            else:
+                new_categories.append(cat)
+        response.categories = new_categories
+        cat_ids = [c.id for c in response.categories]
+
+    if notification_required:
+        logger.info(
+            "[%s] Escalation triggered: tier=%s categories=%s",
+            event_id, escalation_tier, cat_ids,
         )
 
     # Step 10: Record verdict
@@ -707,19 +774,19 @@ async def _record_and_notify(
         notification_required=notification_required,
     )
     await audit_repo.log(event_id, "verdict_recorded", {
-        "rating": response.sensitivity_rating,
+        "escalation_tier": escalation_tier,
+        "categories": cat_ids,
         "notification_required": notification_required,
     })
 
     # Store file hash if we have one and this is not a reuse
     if file_hash and analysis_mode != "hash_reuse":
         await FileHasher.store_hash(
-            file_hash, event_id, response.sensitivity_rating, file_hash_repo,
+            file_hash, event_id, cat_ids, file_hash_repo,
         )
 
     # Step 11: Notify if risky
     if notification_required:
-        file_name = metadata.get("name", getattr(job, "file_name", "") or "")
         payload = AlertPayload(
             event_id=event_id,
             alert_type="high_sensitivity_file",
@@ -733,12 +800,14 @@ async def _record_and_notify(
             event_time=getattr(job, "event_time", "") or "",
             sharing_link_url=metadata.get("sharing_link_url"),
             sharing_links=metadata.get("sharing_links"),
-            sensitivity_rating=response.sensitivity_rating,
-            categories_detected=response.categories_detected,
+            categories=response.categories,
+            escalation_tier=escalation_tier,
+            context=response.context,
             summary=response.summary,
-            confidence=response.confidence,
             recommendation=response.recommendation,
             analysis_mode=analysis_mode,
+            affected_count=response.affected_count,
+            pii_types_found=response.pii_types_found,
             filename_flagged=metadata.get("filename_flagged", False),
             filename_flag_keywords=metadata.get("filename_matched_keywords"),
         )
@@ -749,7 +818,7 @@ async def _record_and_notify(
     # Complete
     await event_repo.update_event_status(event_id, "completed")
     await audit_repo.log(event_id, "pipeline_complete", {
-        "rating": response.sensitivity_rating,
+        "escalation_tier": escalation_tier,
         "mode": analysis_mode,
     })
     logger.info("[%s] Steps 10-11 complete, event marked completed", event_id)

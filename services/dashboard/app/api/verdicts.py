@@ -23,7 +23,8 @@ class AnalystReview(BaseModel):
 @router.get("/verdicts")
 async def list_verdicts(
     request: Request,
-    rating: Optional[int] = None,
+    tier: Optional[str] = None,
+    category: Optional[str] = None,
     provider: Optional[str] = None,
     reviewed: Optional[bool] = None,
     page: int = Query(1, ge=1),
@@ -34,9 +35,17 @@ async def list_verdicts(
     params: list = []
     idx = 1
 
-    if rating is not None:
-        conditions.append(f"v.sensitivity_rating = ${idx}")
-        params.append(rating)
+    if tier is not None:
+        if tier == "escalated":
+            conditions.append("v.escalation_tier IN ('tier_1', 'tier_2')")
+        else:
+            conditions.append(f"v.escalation_tier = ${idx}")
+            params.append(tier)
+            idx += 1
+    if category is not None:
+        import json
+        conditions.append(f"v.category_assessments @> ${idx}::jsonb")
+        params.append(json.dumps([{"id": category}]))
         idx += 1
     if provider:
         conditions.append(f"v.ai_provider = ${idx}")

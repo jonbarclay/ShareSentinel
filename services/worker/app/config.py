@@ -36,7 +36,6 @@ class Config:
     # Processing
     max_file_size_bytes: int = 52_428_800  # 50MB
     text_content_limit: int = 100_000  # ~25K tokens
-    sensitivity_threshold: int = 4
     hash_reuse_days: int = 30
     tmpfs_path: str = "/tmp/sharesentinel"
 
@@ -98,7 +97,6 @@ class Config:
             ai_max_tokens=int(os.environ.get("AI_MAX_TOKENS", "1024")),
             max_file_size_bytes=int(os.environ.get("MAX_FILE_SIZE_BYTES", "52428800")),
             text_content_limit=int(os.environ.get("TEXT_CONTENT_LIMIT", "100000")),
-            sensitivity_threshold=int(os.environ.get("SENSITIVITY_THRESHOLD", "4")),
             hash_reuse_days=int(os.environ.get("HASH_REUSE_DAYS", "30")),
             notification_channels=[c.strip() for c in channels_raw.split(",") if c.strip()],
             notify_on_folder_share=os.environ.get("NOTIFY_ON_FOLDER_SHARE", "true").lower() == "true",

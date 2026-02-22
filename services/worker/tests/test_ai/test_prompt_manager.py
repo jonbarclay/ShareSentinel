@@ -61,7 +61,7 @@ class TestPromptManagerFromDisk:
         assert "48.8 KB" in rendered
         assert "jdoe@org.com" in rendered
         assert "Employee SSNs: 123-45-6789" in rendered
-        assert "EVALUATION CRITERIA" in rendered
+        assert "category_id from taxonomy above" in rendered
 
     def test_multimodal_mode_render(self, pm: PromptManager):
         request = AnalysisRequest(

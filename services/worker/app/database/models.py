@@ -75,11 +75,14 @@ class VerdictRecord:
     id: int = 0
     event_id: str = ""
 
-    # AI verdict
-    sensitivity_rating: int = 0
-    categories_detected: List[str] = field(default_factory=list)
+    # AI verdict (category-based)
+    sensitivity_rating: Optional[int] = None  # legacy, nullable
+    categories_detected: List[str] = field(default_factory=list)  # legacy
+    category_assessments: List[Dict[str, Any]] = field(default_factory=list)
+    overall_context: Optional[str] = None
+    escalation_tier: Optional[str] = None  # "tier_1", "tier_2", "none"
     summary: Optional[str] = None
-    confidence: Optional[str] = None
+    confidence: Optional[str] = None  # legacy, kept for backward compat
     recommendation: Optional[str] = None
 
     # Analysis metadata
@@ -115,7 +118,8 @@ class FileHashRecord:
     id: int = 0
     file_hash: str = ""
     first_event_id: str = ""
-    sensitivity_rating: Optional[int] = None
+    sensitivity_rating: Optional[int] = None  # legacy
+    category_ids: List[str] = field(default_factory=list)
     last_seen_at: Optional[datetime] = None
     times_seen: int = 1
     created_at: Optional[datetime] = None

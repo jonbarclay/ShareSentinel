@@ -54,8 +54,11 @@ CREATE INDEX IF NOT EXISTS idx_events_received_at ON events(received_at);
 CREATE TABLE IF NOT EXISTS verdicts (
     id SERIAL PRIMARY KEY,
     event_id VARCHAR(64) NOT NULL REFERENCES events(event_id),
-    sensitivity_rating INT NOT NULL CHECK (sensitivity_rating BETWEEN 1 AND 5),
+    sensitivity_rating INT,
     categories_detected JSONB DEFAULT '[]'::jsonb,
+    category_assessments JSONB DEFAULT '[]'::jsonb,
+    overall_context VARCHAR(20),
+    escalation_tier VARCHAR(10),
     summary TEXT,
     confidence VARCHAR(10),
     recommendation TEXT,
@@ -66,6 +69,8 @@ CREATE TABLE IF NOT EXISTS verdicts (
     output_tokens INT DEFAULT 0,
     estimated_cost_usd DECIMAL(10, 6) DEFAULT 0,
     processing_time_seconds DECIMAL(8, 2),
+    affected_count INT DEFAULT 0,
+    pii_types_found JSONB DEFAULT '[]'::jsonb,
     notification_required BOOLEAN DEFAULT FALSE,
     notification_sent BOOLEAN DEFAULT FALSE,
     notification_sent_at TIMESTAMP WITH TIME ZONE,
@@ -84,12 +89,14 @@ CREATE INDEX IF NOT EXISTS idx_verdicts_rating ON verdicts(sensitivity_rating);
 CREATE INDEX IF NOT EXISTS idx_verdicts_notification ON verdicts(notification_required, notification_sent);
 CREATE INDEX IF NOT EXISTS idx_verdicts_provider ON verdicts(ai_provider);
 CREATE INDEX IF NOT EXISTS idx_verdicts_created ON verdicts(created_at);
+CREATE INDEX IF NOT EXISTS idx_verdicts_escalation_tier ON verdicts(escalation_tier);
 
 CREATE TABLE IF NOT EXISTS file_hashes (
     id SERIAL PRIMARY KEY,
     file_hash VARCHAR(64) UNIQUE NOT NULL,
     first_event_id VARCHAR(64) NOT NULL,
     sensitivity_rating INT,
+    category_ids JSONB DEFAULT '[]'::jsonb,
     last_seen_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     times_seen INT DEFAULT 1,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
@@ -122,7 +129,6 @@ CREATE TABLE IF NOT EXISTS configuration (
 );
 
 INSERT INTO configuration (key, value, description) VALUES
-    ('sensitivity_threshold', '4', 'Minimum sensitivity rating to trigger analyst notification'),
     ('max_file_size_bytes', '52428800', 'Maximum file size to download (50MB)'),
     ('text_content_limit', '100000', 'Maximum extracted text size in characters'),
     ('hash_reuse_days', '30', 'Days to consider a previous hash analysis valid for reuse'),
@@ -135,7 +141,10 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-INSERT INTO schema_migrations (version, filename) VALUES (1, '001_initial.sql')
+INSERT INTO schema_migrations (version, filename) VALUES
+    (1, '001_initial.sql'),
+    (5, '005_categories.sql'),
+    (6, '006_pii_enrichment.sql')
 ON CONFLICT (version) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS remediations (

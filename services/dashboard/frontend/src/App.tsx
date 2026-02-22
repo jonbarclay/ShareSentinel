@@ -3,51 +3,36 @@ import Dashboard from "./pages/Dashboard";
 import EventList from "./pages/EventList";
 import EventDetail from "./pages/EventDetail";
 import Statistics from "./pages/Statistics";
-import { uvu } from "./theme";
-
-const navStyle: React.CSSProperties = {
-  display: "flex",
-  gap: "1.5rem",
-  padding: "0.85rem 2rem",
-  background: uvu.greenD2,
-  color: "#fff",
-  alignItems: "center",
-  borderBottom: `3px solid ${uvu.green}`,
-};
-
-const linkStyle: React.CSSProperties = {
-  color: "rgba(255,255,255,.7)",
-  textDecoration: "none",
-  fontSize: "0.9rem",
-  fontWeight: 500,
-  padding: "4px 0",
-  borderBottom: "2px solid transparent",
-};
-const activeStyle: React.CSSProperties = {
-  color: uvu.gold,
-  borderBottomColor: uvu.gold,
-};
+import "./App.css";
 
 function Nav() {
-  const style = ({ isActive }: { isActive: boolean }) =>
-    isActive ? { ...linkStyle, ...activeStyle } : linkStyle;
   return (
-    <nav style={navStyle}>
-      <strong style={{ marginRight: "auto", fontSize: "1.05rem", color: "#fff", letterSpacing: "-0.01em" }}>
-        ShareSentinel
-      </strong>
-      <NavLink to="/" style={style} end>Dashboard</NavLink>
-      <NavLink to="/events" style={style}>Events</NavLink>
-      <NavLink to="/statistics" style={style}>Statistics</NavLink>
+    <nav className="top-nav glass-effect">
+      <div className="nav-content">
+        <strong className="brand-logo">
+          ShareSentinel
+        </strong>
+        <div className="nav-links">
+          <NavLink to="/" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")} end>
+            Dashboard
+          </NavLink>
+          <NavLink to="/events" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            Events
+          </NavLink>
+          <NavLink to="/statistics" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            Statistics
+          </NavLink>
+        </div>
+      </div>
     </nav>
   );
 }
 
 export default function App() {
   return (
-    <>
+    <div className="app-container">
       <Nav />
-      <main style={{ padding: "1.5rem 2rem", maxWidth: 1400, margin: "0 auto" }}>
+      <main className="main-content">
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/events" element={<EventList />} />
@@ -55,6 +40,6 @@ export default function App() {
           <Route path="/statistics" element={<Statistics />} />
         </Routes>
       </main>
-    </>
+    </div>
   );
 }

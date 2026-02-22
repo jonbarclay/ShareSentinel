@@ -1,0 +1,78 @@
+.app-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.top-nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: var(--uvu-green-d2);
+  /* The original nav used solid dark green, adding subtle transparency for glass effect if we scroll up */
+  background: rgba(30, 72, 44, 0.95);
+  border-bottom: 3px solid var(--uvu-green);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+}
+
+.nav-content {
+  display: flex;
+  align-items: center;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0.85rem 2rem;
+  width: 100%;
+}
+
+.brand-logo {
+  margin-right: auto;
+  font-size: 1.1rem;
+  color: #ffffff;
+  letter-spacing: -0.01em;
+  font-weight: 700;
+}
+
+.nav-links {
+  display: flex;
+  gap: 2rem;
+}
+
+.nav-link {
+  color: rgba(255, 255, 255, 0.7);
+  text-decoration: none;
+  font-size: 0.95rem;
+  font-weight: 500;
+  padding: 6px 0;
+  border-bottom: 2px solid transparent;
+  transition: var(--transition);
+}
+
+.nav-link:hover {
+  color: #ffffff;
+  text-decoration: none;
+}
+
+.nav-link.active {
+  color: var(--uvu-gold);
+  border-bottom-color: var(--uvu-gold);
+}
+
+.main-content {
+  padding: 2rem;
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+  flex: 1;
+}
+
+@media (max-width: 768px) {
+  .nav-content {
+    padding: 0.85rem 1rem;
+  }
+  .nav-links {
+    gap: 1rem;
+  }
+  .main-content {
+    padding: 1.5rem 1rem;
+  }
+}

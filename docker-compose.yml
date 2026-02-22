@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   webhook-listener:
@@ -69,7 +69,6 @@ services:
       # Processing
       - MAX_FILE_SIZE_BYTES=${MAX_FILE_SIZE_BYTES:-52428800}
       - TEXT_CONTENT_LIMIT=${TEXT_CONTENT_LIMIT:-100000}
-      - SENSITIVITY_THRESHOLD=${SENSITIVITY_THRESHOLD:-4}
       - HASH_REUSE_DAYS=${HASH_REUSE_DAYS:-30}
 
       # Notifications
@@ -122,6 +121,7 @@ services:
       - "${DASHBOARD_HOST_PORT:-8080}:8080"
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-sharesentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharesentinel}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:8080,http://127.0.0.1:8080}
     depends_on:
       postgres:
         condition: service_healthy
@@ -175,7 +175,11 @@ services:
     networks:
       - sharesentinel
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sharesentinel} -d ${POSTGRES_DB:-sharesentinel}"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-sharesentinel} -d ${POSTGRES_DB:-sharesentinel}",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5

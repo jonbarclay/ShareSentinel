@@ -35,7 +35,7 @@ class JiraNotifier(BaseNotifier):
     def _map_priority(payload: AlertPayload) -> str:
         """Map alert details to a Jira priority name."""
         if payload.alert_type == "high_sensitivity_file":
-            if payload.sensitivity_rating == 5:
+            if payload.escalation_tier == "tier_1":
                 return "Highest"
             return "High"
         elif payload.alert_type == "folder_share":
@@ -52,8 +52,10 @@ class JiraNotifier(BaseNotifier):
     def _build_labels(payload: AlertPayload) -> List[str]:
         """Build the list of Jira labels for the issue."""
         labels = ["sharesentinel", "dlp"]
-        if payload.sensitivity_rating is not None:
-            labels.append(f"sensitivity-{payload.sensitivity_rating}")
+        if payload.escalation_tier:
+            labels.append(payload.escalation_tier)
+        for cat_id in payload.category_ids:
+            labels.append(cat_id)
         return labels
 
     # ------------------------------------------------------------------
@@ -63,10 +65,15 @@ class JiraNotifier(BaseNotifier):
     @staticmethod
     def _build_summary(payload: AlertPayload) -> str:
         """Build the Jira issue summary (title)."""
+        from ..ai.base_provider import CATEGORY_LABELS
         if payload.alert_type == "high_sensitivity_file":
+            tier_label = "URGENT" if payload.escalation_tier == "tier_1" else "Alert"
+            top_cat = ""
+            if payload.category_ids:
+                top_id = payload.category_ids[0]
+                top_cat = CATEGORY_LABELS.get(top_id, top_id)
             return (
-                f"[ShareSentinel] High Sensitivity File Detected "
-                f"(Rating: {payload.sensitivity_rating}/5) - {payload.file_name}"
+                f"[ShareSentinel] [{tier_label}] {top_cat} - {payload.file_name}"
             )
         elif payload.alert_type == "folder_share":
             return (
@@ -163,31 +170,31 @@ class JiraNotifier(BaseNotifier):
         content.append(_rule())
 
         # -- AI analysis results (file alerts only) --
-        if payload.alert_type == "high_sensitivity_file" and payload.sensitivity_rating is not None:
+        if payload.alert_type == "high_sensitivity_file" and payload.categories:
+            from ..ai.base_provider import CATEGORY_LABELS
             content.append(_heading("AI Analysis Results"))
             content.append(
                 _paragraph(
-                    _text("Sensitivity rating: ", bold=True),
-                    _text(f"{payload.sensitivity_rating}/5"),
+                    _text("Escalation tier: ", bold=True),
+                    _text(payload.escalation_tier or "none"),
                 )
             )
-            if payload.categories_detected:
-                content.append(
-                    _paragraph(
-                        _text("Categories: ", bold=True),
-                        _text(", ".join(payload.categories_detected)),
-                    )
+            content.append(
+                _paragraph(
+                    _text("Context: ", bold=True),
+                    _text(payload.context or "unknown"),
                 )
+            )
+            for cat in payload.categories:
+                label = CATEGORY_LABELS.get(cat.id, cat.id)
+                cat_line = f"{label} (confidence: {cat.confidence})"
+                if cat.evidence:
+                    cat_line += f" — {cat.evidence}"
+                content.append(_paragraph(_text("• ", bold=True), _text(cat_line)))
             if payload.summary:
                 content.append(
                     _paragraph(
                         _text("Summary: ", bold=True), _text(payload.summary),
-                    )
-                )
-            if payload.confidence:
-                content.append(
-                    _paragraph(
-                        _text("Confidence: ", bold=True), _text(payload.confidence),
                     )
                 )
             if payload.recommendation:

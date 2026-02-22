@@ -30,7 +30,6 @@ def _make_config(**overrides) -> Config:
         azure_client_secret="secret",
         ai_provider="anthropic",
         anthropic_api_key="sk-test",
-        sensitivity_threshold=4,
         hash_reuse_days=30,
         tmpfs_path="/tmp/sharesentinel",
         notify_on_folder_share=True,
@@ -70,14 +69,18 @@ def _make_folder_job(**overrides) -> dict:
     return base
 
 
-def _make_ai_response(rating: int = 5, success: bool = True, **kw) -> AnalysisResponse:
+def _make_ai_response(
+    categories=None, tier="tier_1", success: bool = True, **kw,
+) -> AnalysisResponse:
+    from app.ai.base_provider import CategoryDetection
+    if categories is None:
+        categories = [CategoryDetection(id="pii_government_id", confidence="high", evidence="SSN found")]
     defaults = dict(
-        sensitivity_rating=rating,
-        categories_detected=["pii"],
+        categories=categories,
+        context="institutional",
         summary="Contains PII.",
-        confidence="high",
         recommendation="Remove sharing link.",
-        raw_response='{"sensitivity_rating": %d}' % rating,
+        raw_response='{"categories": []}',
         provider="anthropic",
         model="claude-sonnet-4-5-20250929",
         input_tokens=500,
@@ -154,7 +157,7 @@ class TestFileProcessingPath(unittest.TestCase):
         """File share: download, extract text, AI analysis rating 5, notify."""
         job = _make_file_job()
         config = _make_config()
-        ai_provider = _mock_ai_provider(_make_ai_response(rating=5))
+        ai_provider = _mock_ai_provider(_make_ai_response())
         dispatcher = _mock_notifier_dispatcher()
         event_repo, verdict_repo, file_hash_repo, audit_repo = _make_repo_mocks()
 
@@ -172,7 +175,7 @@ class TestFileProcessingPath(unittest.TestCase):
             patch("app.pipeline.orchestrator.FileDownloader") as mock_dl_cls,
             patch("app.pipeline.orchestrator.FileHasher") as mock_hasher_cls,
             patch("app.pipeline.orchestrator._extract_and_build_request") as mock_extract,
-            patch("app.pipeline.orchestrator.retry_with_backoff", new_callable=lambda: _passthrough_retry),
+            patch("app.pipeline.orchestrator.retry_with_backoff", new=_passthrough_retry),
             patch("app.pipeline.orchestrator.Cleanup") as mock_cleanup,
         ):
             # Metadata returns file info
@@ -207,6 +210,7 @@ class TestFileProcessingPath(unittest.TestCase):
             hasher_instance.compute_hash.return_value = "abc123hash"
             hasher_instance.check_reuse = AsyncMock(return_value=None)
             mock_hasher_cls.return_value = hasher_instance
+            mock_hasher_cls.store_hash = AsyncMock()  # static method
 
             # Extraction builds a text-mode request
             from app.ai.base_provider import AnalysisRequest
@@ -229,7 +233,7 @@ class TestFileProcessingPath(unittest.TestCase):
             # Verify verdict was recorded
             verdict_repo.create_verdict.assert_called_once()
 
-            # Verify notification was dispatched (rating=5 >= threshold=4)
+            # Verify notification was dispatched (tier_1 category triggers escalation)
             dispatcher.dispatch.assert_called_once()
 
             # Verify event marked completed
@@ -280,7 +284,10 @@ class TestExcludedFileTypePath(unittest.TestCase):
     def test_excluded_file_gets_filename_only(self):
         job = _make_file_job(file_name="meeting-recording.mp4")
         config = _make_config()
-        ai_response = _make_ai_response(rating=2)
+        from app.ai.base_provider import CategoryDetection
+        ai_response = _make_ai_response(
+            categories=[CategoryDetection(id="none", confidence="high", evidence="")],
+        )
         ai_provider = _mock_ai_provider(ai_response)
         dispatcher = _mock_notifier_dispatcher()
         event_repo, verdict_repo, file_hash_repo, audit_repo = _make_repo_mocks()
@@ -294,7 +301,7 @@ class TestExcludedFileTypePath(unittest.TestCase):
             patch("app.pipeline.orchestrator.GraphClient"),
             patch("app.pipeline.orchestrator.MetadataPrescreen") as mock_meta_cls,
             patch("app.pipeline.orchestrator.FileClassifier") as mock_classifier_cls,
-            patch("app.pipeline.orchestrator.retry_with_backoff", new_callable=lambda: _passthrough_retry),
+            patch("app.pipeline.orchestrator.retry_with_backoff", new=_passthrough_retry),
             patch("app.pipeline.orchestrator.Cleanup"),
         ):
             meta_instance = AsyncMock()
@@ -353,7 +360,7 @@ class TestHashReusePath(unittest.TestCase):
             patch("app.pipeline.orchestrator.FileClassifier") as mock_classifier_cls,
             patch("app.pipeline.orchestrator.FileDownloader") as mock_dl_cls,
             patch("app.pipeline.orchestrator.FileHasher") as mock_hasher_cls,
-            patch("app.pipeline.orchestrator.retry_with_backoff", new_callable=lambda: _passthrough_retry),
+            patch("app.pipeline.orchestrator.retry_with_backoff", new=_passthrough_retry),
             patch("app.pipeline.orchestrator.Cleanup"),
         ):
             meta_instance = AsyncMock()
@@ -381,7 +388,7 @@ class TestHashReusePath(unittest.TestCase):
             hasher_instance.compute_hash.return_value = "existing_hash_abc"
             hasher_instance.check_reuse = AsyncMock(return_value={
                 "first_event_id": "evt-original-001",
-                "sensitivity_rating": 3,
+                "category_ids": ["coursework"],
             })
             mock_hasher_cls.return_value = hasher_instance
 
@@ -421,7 +428,7 @@ class TestFileNotFoundHandling(unittest.TestCase):
             patch("app.pipeline.orchestrator.MetadataPrescreen") as mock_meta_cls,
             patch("app.pipeline.orchestrator.FileClassifier") as mock_classifier_cls,
             patch("app.pipeline.orchestrator.FileDownloader") as mock_dl_cls,
-            patch("app.pipeline.orchestrator.retry_with_backoff", new_callable=lambda: _passthrough_retry),
+            patch("app.pipeline.orchestrator.retry_with_backoff", new=_passthrough_retry),
             patch("app.pipeline.orchestrator.Cleanup"),
         ):
             meta_instance = AsyncMock()
@@ -443,7 +450,7 @@ class TestFileNotFoundHandling(unittest.TestCase):
             from app.pipeline.downloader import DownloadError
             dl_instance = AsyncMock()
             dl_instance.download = AsyncMock(
-                side_effect=DownloadError("file_not_found", "File not found")
+                side_effect=DownloadError("File not found", reason="file_not_found")
             )
             mock_dl_cls.return_value = dl_instance
 
@@ -470,7 +477,7 @@ class TestAIAnalysisFailureHandling(unittest.TestCase):
         job = _make_file_job(event_id="evt-ai-fail-001")
         config = _make_config()
         failed_response = _make_ai_response(
-            rating=0, success=False, error="API timeout",
+            categories=[], success=False, error="API timeout",
         )
         ai_provider = _mock_ai_provider(failed_response)
         dispatcher = _mock_notifier_dispatcher()
@@ -490,7 +497,7 @@ class TestAIAnalysisFailureHandling(unittest.TestCase):
             patch("app.pipeline.orchestrator.FileDownloader") as mock_dl_cls,
             patch("app.pipeline.orchestrator.FileHasher") as mock_hasher_cls,
             patch("app.pipeline.orchestrator._extract_and_build_request") as mock_extract,
-            patch("app.pipeline.orchestrator.retry_with_backoff", new_callable=lambda: _passthrough_retry),
+            patch("app.pipeline.orchestrator.retry_with_backoff", new=_passthrough_retry),
             patch("app.pipeline.orchestrator.Cleanup"),
         ):
             meta_instance = AsyncMock()
@@ -544,13 +551,9 @@ class TestAIAnalysisFailureHandling(unittest.TestCase):
 # Retry passthrough helper
 # ---------------------------------------------------------------------------
 
-def _passthrough_retry():
-    """Return an async function that calls the target directly (no retries)."""
-
-    async def _call(fn, *args, **kwargs):
-        return await fn(*args, **kwargs)
-
-    return _call
+async def _passthrough_retry(fn, *args, **kwargs):
+    """Call the target directly with no retries (test stand-in for retry_with_backoff)."""
+    return await fn(*args, **kwargs)
 
 
 if __name__ == "__main__":

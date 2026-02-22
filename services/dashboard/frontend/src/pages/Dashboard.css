@@ -1,0 +1,36 @@
+.dashboard-container {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.page-title {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: var(--uvu-green-d2);
+  margin-bottom: 0.5rem;
+  letter-spacing: -0.02em;
+}
+
+.section-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--uvu-text);
+  margin-bottom: 1.25rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--uvu-divider);
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.recent-events-section {
+  padding: 1.5rem;
+  border-radius: var(--card-radius);
+  background: var(--uvu-surface);
+  box-shadow: var(--card-shadow);
+}

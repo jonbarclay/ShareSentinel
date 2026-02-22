@@ -16,15 +16,15 @@
 <!-- ============================================================ -->
 <!-- Alert Banner                                                  -->
 <!-- ============================================================ -->
-{% if alert_type == "high_sensitivity_file" and sensitivity_rating == 5 %}
+{% if alert_type == "high_sensitivity_file" and escalation_tier == "tier_1" %}
 <tr><td style="background-color:#de350b;padding:20px 24px;color:#ffffff;">
-  <h1 style="margin:0;font-size:20px;font-weight:600;">Critical Sensitivity Alert</h1>
-  <p style="margin:6px 0 0;font-size:14px;opacity:0.9;">Sensitivity Rating: {{ sensitivity_rating }}/5</p>
+  <h1 style="margin:0;font-size:20px;font-weight:600;">URGENT — Tier 1 Escalation</h1>
+  <p style="margin:6px 0 0;font-size:14px;opacity:0.9;">{% for c in categories %}{{ c.id }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
 </td></tr>
-{% elif alert_type == "high_sensitivity_file" and sensitivity_rating == 4 %}
+{% elif alert_type == "high_sensitivity_file" and escalation_tier == "tier_2" %}
 <tr><td style="background-color:#ff991f;padding:20px 24px;color:#172b4d;">
-  <h1 style="margin:0;font-size:20px;font-weight:600;">High Sensitivity Alert</h1>
-  <p style="margin:6px 0 0;font-size:14px;">Sensitivity Rating: {{ sensitivity_rating }}/5</p>
+  <h1 style="margin:0;font-size:20px;font-weight:600;">Tier 2 Escalation</h1>
+  <p style="margin:6px 0 0;font-size:14px;">{% for c in categories %}{{ c.id }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
 </td></tr>
 {% elif alert_type == "folder_share" %}
 <tr><td style="background-color:#ffab00;padding:20px 24px;color:#172b4d;">
@@ -109,38 +109,38 @@
   {% endif %}
 </table>
 
-<!-- ============================================================ -->
-<!-- AI Analysis Results (only for high_sensitivity_file)          -->
-<!-- ============================================================ -->
-{% if alert_type == "high_sensitivity_file" and sensitivity_rating is not none %}
+{% if alert_type == "high_sensitivity_file" and categories %}
+<!-- AI Analysis Results -->
 <h2 style="margin:0 0 12px;font-size:16px;font-weight:600;color:#172b4d;border-bottom:1px solid #dfe1e6;padding-bottom:8px;">AI Analysis Results</h2>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
   <tr>
-    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;width:120px;vertical-align:top;">Rating</td>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;width:120px;vertical-align:top;">Escalation</td>
     <td style="padding:4px 0;color:#172b4d;">
-      <span style="display:inline-block;background-color:{% if sensitivity_rating == 5 %}#de350b{% elif sensitivity_rating == 4 %}#ff991f{% else %}#6b778c{% endif %};color:#ffffff;padding:2px 10px;border-radius:12px;font-weight:600;font-size:13px;">{{ sensitivity_rating }}/5</span>
+      <span style="display:inline-block;background-color:{% if escalation_tier == 'tier_1' %}#de350b{% elif escalation_tier == 'tier_2' %}#ff991f{% else %}#6b778c{% endif %};color:#ffffff;padding:2px 10px;border-radius:12px;font-weight:600;font-size:13px;">{{ escalation_tier }}</span>
     </td>
   </tr>
-  {% if categories_detected %}
+  {% if context %}
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Context</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ context }}</td>
+  </tr>
+  {% endif %}
   <tr>
     <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Categories</td>
     <td style="padding:4px 0;color:#172b4d;">
-      {% for cat in categories_detected %}
-      <span style="display:inline-block;background-color:#deebff;color:#0052cc;padding:2px 8px;border-radius:4px;font-size:12px;margin:2px 4px 2px 0;">{{ cat }}</span>
+      {% for cat in categories %}
+      <div style="margin-bottom:6px;">
+        <span style="display:inline-block;background-color:{% if escalation_tier == 'tier_1' %}#ffebe6{% elif escalation_tier == 'tier_2' %}#fff3cd{% else %}#f4f5f7{% endif %};color:{% if escalation_tier == 'tier_1' %}#de350b{% elif escalation_tier == 'tier_2' %}#ff8b00{% else %}#6b778c{% endif %};padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;">{{ cat.id }}</span>
+        <span style="font-size:12px;color:#6b778c;margin-left:4px;">({{ cat.confidence }})</span>
+        {% if cat.evidence %}<div style="font-size:12px;color:#6b778c;margin-top:2px;margin-left:4px;">{{ cat.evidence }}</div>{% endif %}
+      </div>
       {% endfor %}
     </td>
   </tr>
-  {% endif %}
   {% if summary %}
   <tr>
     <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Summary</td>
     <td style="padding:4px 0;color:#172b4d;">{{ summary }}</td>
-  </tr>
-  {% endif %}
-  {% if confidence %}
-  <tr>
-    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Confidence</td>
-    <td style="padding:4px 0;color:#172b4d;">{{ confidence }}</td>
   </tr>
   {% endif %}
   {% if recommendation %}

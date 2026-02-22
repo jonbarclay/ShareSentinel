@@ -3,7 +3,10 @@
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from ..ai.base_provider import CategoryDetection
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +32,22 @@ class AlertPayload:
     sharing_link_url: Optional[str] = None
     sharing_links: Optional[List[Dict[str, str]]] = None
 
-    # AI analysis results (None for folder shares and processing failures)
-    sensitivity_rating: Optional[int] = None
-    categories_detected: Optional[List[str]] = None
+    # Category-based analysis results
+    categories: Optional[List] = None  # List[CategoryDetection]
+    escalation_tier: Optional[str] = None  # "tier_1", "tier_2", "none"
+    context: Optional[str] = None  # "coursework", "institutional", "personal", "mixed"
     summary: Optional[str] = None
-    confidence: Optional[str] = None
     recommendation: Optional[str] = None
     analysis_mode: Optional[str] = None  # "text", "multimodal", "filename_only"
+
+    # PII enrichment fields
+    affected_count: int = 0
+    pii_types_found: Optional[List[str]] = None
+
+    # Legacy fields kept for backward compat with remediation_report
+    sensitivity_rating: Optional[int] = None
+    categories_detected: Optional[List[str]] = None
+    confidence: Optional[str] = None
 
     # Remediation context (populated only for remediation_report)
     permission_details: Optional[List[Dict[str, str]]] = None
@@ -46,6 +58,22 @@ class AlertPayload:
     was_sampled: bool = False
     sampling_description: Optional[str] = None
     failure_reason: Optional[str] = None
+
+    @property
+    def category_ids(self) -> List[str]:
+        """Return list of category ID strings."""
+        if self.categories:
+            return [c.id for c in self.categories]
+        return []
+
+    @property
+    def priority(self) -> str:
+        """Return 'urgent' for tier_1, 'normal' for tier_2, 'low' otherwise."""
+        if self.escalation_tier == "tier_1":
+            return "urgent"
+        if self.escalation_tier == "tier_2":
+            return "normal"
+        return "low"
 
 
 class BaseNotifier(ABC):

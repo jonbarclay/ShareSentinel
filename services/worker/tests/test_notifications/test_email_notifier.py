@@ -15,7 +15,17 @@ from app.notifications.email_notifier import EmailNotifier
 # Fixtures
 # ---------------------------------------------------------------------------
 
-_TEMPLATE_DIR = Path(__file__).resolve().parents[4] / "config" / "notification_templates"
+def _find_template_dir() -> Path:
+    """Walk up from the test file to find config/notification_templates."""
+    current = Path(__file__).resolve().parent
+    for _ in range(10):
+        candidate = current / "config" / "notification_templates"
+        if candidate.is_dir():
+            return candidate
+        current = current.parent
+    return Path("/app/config/notification_templates")
+
+_TEMPLATE_DIR = _find_template_dir()
 
 
 def _make_notifier(**overrides) -> EmailNotifier:
@@ -36,6 +46,7 @@ def _make_notifier(**overrides) -> EmailNotifier:
 
 def _sample_payload(**overrides) -> AlertPayload:
     """Return a realistic AlertPayload for testing."""
+    from app.ai.base_provider import CategoryDetection
     defaults = dict(
         event_id="evt-abc-123",
         alert_type="high_sensitivity_file",
@@ -48,10 +59,13 @@ def _sample_payload(**overrides) -> AlertPayload:
         sharing_permission="Edit",
         event_time="2026-02-20T14:32:00Z",
         sharing_link_url="https://contoso.sharepoint.com/s/abc123",
-        sensitivity_rating=5,
-        categories_detected=["Financial Data", "PII"],
+        categories=[
+            CategoryDetection(id="pii_financial", confidence="high", evidence="Account numbers in column B"),
+            CategoryDetection(id="pii_government_id", confidence="high", evidence="SSNs in column D"),
+        ],
+        escalation_tier="tier_1",
+        context="institutional",
         summary="Contains quarterly revenue figures and employee SSNs.",
-        confidence="High",
         recommendation="Restrict sharing immediately.",
         analysis_mode="text",
         was_sampled=True,
@@ -68,27 +82,28 @@ def _sample_payload(**overrides) -> AlertPayload:
 class TestSubjectLine:
     """Verify subject lines for each alert type."""
 
-    def test_high_sensitivity_file_subject(self):
+    def test_tier_1_subject(self):
         payload = _sample_payload(
             alert_type="high_sensitivity_file",
-            sensitivity_rating=5,
             file_name="secrets.docx",
+            escalation_tier="tier_1",
         )
         subject = EmailNotifier._build_subject(payload)
-        assert subject == (
-            "[ShareSentinel] High Sensitivity File Detected "
-            "(Rating: 5/5) - secrets.docx"
-        )
+        assert "[URGENT]" in subject
+        assert "secrets.docx" in subject
 
-    def test_high_sensitivity_rating_4(self):
+    def test_tier_2_subject(self):
+        from app.ai.base_provider import CategoryDetection
         payload = _sample_payload(
             alert_type="high_sensitivity_file",
-            sensitivity_rating=4,
             file_name="report.pdf",
+            escalation_tier="tier_2",
+            categories=[CategoryDetection(id="hr_personnel", confidence="high", evidence="salary data")],
         )
         subject = EmailNotifier._build_subject(payload)
-        assert "(Rating: 4/5)" in subject
+        assert "[Alert]" in subject
         assert "report.pdf" in subject
+        assert "HR/Personnel" in subject
 
     def test_folder_share_subject(self):
         payload = _sample_payload(
@@ -130,9 +145,10 @@ class TestTemplateRendering:
 
         assert "Q4-Financials.xlsx" in html
         assert "jane.doe@contoso.com" in html
-        assert "5/5" in html
-        assert "Financial Data" in html
-        assert "PII" in html
+        assert "tier_1" in html
+        assert "pii_financial" in html
+        assert "pii_government_id" in html
+        assert "institutional" in html  # context
         assert "text" in html  # analysis_mode
         assert "100KB" in html  # sampling note
 
@@ -142,10 +158,10 @@ class TestTemplateRendering:
             alert_type="folder_share",
             item_type="Folder",
             file_name="Shared Folder",
-            sensitivity_rating=None,
-            categories_detected=None,
+            categories=None,
+            escalation_tier=None,
+            context=None,
             summary=None,
-            confidence=None,
             recommendation=None,
             analysis_mode=None,
             was_sampled=False,
@@ -164,10 +180,10 @@ class TestTemplateRendering:
             alert_type="processing_failure",
             file_name="broken.docx",
             failure_reason="Graph API returned 403 Forbidden",
-            sensitivity_rating=None,
-            categories_detected=None,
+            categories=None,
+            escalation_tier=None,
+            context=None,
             summary=None,
-            confidence=None,
             recommendation=None,
             analysis_mode=None,
         )
@@ -183,15 +199,16 @@ class TestTemplateRendering:
         text = EmailNotifier._build_plain_text(payload)
 
         assert "Q4-Financials.xlsx" in text
-        assert "5/5" in text
+        assert "tier_1" in text
+        assert "Financial" in text  # category label
         assert "jane.doe@contoso.com" in text
         assert "evt-abc-123" in text
 
     def test_plain_text_folder_no_ai(self):
         payload = _sample_payload(
             alert_type="folder_share",
-            sensitivity_rating=None,
-            categories_detected=None,
+            categories=None,
+            escalation_tier=None,
             summary=None,
         )
         text = EmailNotifier._build_plain_text(payload)

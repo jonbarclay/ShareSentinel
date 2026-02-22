@@ -53,18 +53,18 @@ class FileHasher:
         -------
         dict or None
             If a match is found, returns the ``file_hashes`` row as a dict
-            containing at least ``first_event_id``, ``sensitivity_rating``,
+            containing at least ``first_event_id``, ``category_ids``,
             ``times_seen``, and ``last_seen_at``.  Returns ``None`` if no
             recent match exists.
         """
         existing = await file_hash_repo.check_hash(file_hash, max_age_days)
         if existing:
             logger.info(
-                "Hash reuse match hash=%s…%s previous_event=%s rating=%s",
+                "Hash reuse match hash=%s…%s previous_event=%s categories=%s",
                 file_hash[:8],
                 file_hash[-4:],
                 existing.get("first_event_id"),
-                existing.get("sensitivity_rating"),
+                existing.get("category_ids"),
             )
             # Bump the seen counter / timestamp
             await file_hash_repo.update_last_seen(file_hash)
@@ -77,7 +77,7 @@ class FileHasher:
     async def store_hash(
         file_hash: str,
         event_id: str,
-        sensitivity_rating: int,
+        category_ids: list[str],
         file_hash_repo: FileHashRepository,
     ) -> None:
         """Persist the hash after a new verdict is recorded.
@@ -85,11 +85,11 @@ class FileHasher:
         Uses ``INSERT … ON CONFLICT`` so that a race between two workers
         processing the same content does not produce an error.
         """
-        await file_hash_repo.store_hash(file_hash, event_id, sensitivity_rating)
+        await file_hash_repo.store_hash(file_hash, event_id, category_ids)
         logger.info(
-            "Stored hash=%s…%s event_id=%s rating=%s",
+            "Stored hash=%s…%s event_id=%s categories=%s",
             file_hash[:8],
             file_hash[-4:],
             event_id,
-            sensitivity_rating,
+            category_ids,
         )
