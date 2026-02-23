@@ -21,12 +21,33 @@ interface TierRow {
   count: number;
 }
 
+interface TopUserRow {
+  user_id: string;
+  display_name: string | null;
+  department: string | null;
+  escalated_count: number;
+  tier_1_count: number;
+  tier_2_count: number;
+  latest_event: string | null;
+}
+
+interface TopSiteRow {
+  site_url: string;
+  escalated_count: number;
+  tier_1_count: number;
+  tier_2_count: number;
+  unique_users: number;
+  latest_event: string | null;
+}
+
 interface Stats {
   events: { total: number; completed: number; processing: number; failed: number };
   verdicts: { total_verdicts: number; escalated: number; tier_1_count: number; tier_2_count: number; reviewed: number; total_cost: number | null };
   by_provider: ProviderRow[];
   by_category: CategoryRow[];
   by_tier: TierRow[];
+  top_users: TopUserRow[];
+  top_sites: TopSiteRow[];
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -65,6 +86,9 @@ function categoryBarColor(catId: string): string {
 export default function Statistics() {
   const nav = useNavigate();
   const [stats, setStats] = useState<Stats | null>(null);
+  const [userPage, setUserPage] = useState(0);
+  const [sitePage, setSitePage] = useState(0);
+  const PAGE_SIZE = 10;
   useEffect(() => {
     apiFetch<Stats>("/stats").then(setStats);
     const id = setInterval(() => { apiFetch<Stats>("/stats").then(setStats); }, 30_000);
@@ -75,6 +99,35 @@ export default function Statistics() {
 
   const v = stats.verdicts;
   const maxCatCount = Math.max(...stats.by_category.map((r) => r.count), 1);
+  const maxUserEsc = Math.max(...(stats.top_users ?? []).map((r) => r.escalated_count), 1);
+  const maxSiteEsc = Math.max(...(stats.top_sites ?? []).map((r) => r.escalated_count), 1);
+
+  function parseSiteName(url: string): string {
+    // /sites/SiteName/ → humanize "SiteName"
+    const sitesMatch = url.match(/\/sites\/([^/]+)/);
+    if (sitesMatch) {
+      return sitesMatch[1]
+        .replace(/[-_.]+/g, " ")                     // split on delimiters
+        .replace(/([a-z])([A-Z])/g, "$1 $2")         // split camelCase
+        .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")   // split acronyms (e.g. FYESRMain → FYESR Main)
+        .trim();
+    }
+    // /personal/userid_domain/ → "OneDrive – userid@domain"
+    const personalMatch = url.match(/\/personal\/([^/]+)/);
+    if (personalMatch) {
+      const parts = personalMatch[1].split("_");
+      const user = parts[0];
+      const domain = parts.slice(1).join(".");
+      return `OneDrive \u2013 ${user}@${domain}`;
+    }
+    // fallback: strip protocol
+    return url.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  }
+
+  function fmtDate(iso: string | null): string {
+    if (!iso) return "—";
+    return new Date(iso).toLocaleDateString();
+  }
 
   return (
     <div>
@@ -148,7 +201,7 @@ export default function Statistics() {
         </div>
       </div>
 
-      <div style={card}>
+      <div style={{ ...card, marginBottom: "1.5rem" }}>
         <h3 style={{ marginBottom: "1rem", fontSize: "0.95rem", fontWeight: 600 }}>By Escalation Tier</h3>
         <div style={{ display: "flex", gap: "2rem" }}>
           {stats.by_tier.map((t) => (
@@ -170,6 +223,104 @@ export default function Statistics() {
           ))}
           {stats.by_tier.length === 0 && (
             <div style={{ color: uvu.textMuted, fontSize: "0.85rem" }}>No tier data yet.</div>
+          )}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1.5rem" }}>
+        <div style={card}>
+          <h3 style={{ marginBottom: "1rem", fontSize: "0.95rem", fontWeight: 600 }}>Top Users (Escalated)</h3>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th style={thStyle}>User</th>
+                <th style={thStyle}>Dept</th>
+                <th style={thStyle}>Escalated</th>
+                <th style={thStyle}>T1</th>
+                <th style={thStyle}>T2</th>
+                <th style={thStyle}>Latest</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(stats.top_users ?? []).slice(userPage * PAGE_SIZE, (userPage + 1) * PAGE_SIZE).map((u) => (
+                <tr
+                  key={u.user_id}
+                  style={{ cursor: "pointer" }}
+                  onClick={() => nav(`/events?user=${encodeURIComponent(u.user_id)}&hide_reviewed=1`)}
+                  title={`Filter events for ${u.display_name || u.user_id}`}
+                >
+                  <td style={{ ...tdStyle, fontWeight: 500, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {u.display_name || u.user_id}
+                  </td>
+                  <td style={{ ...tdStyle, fontSize: "0.8rem", color: uvu.textSecondary }}>{u.department || "—"}</td>
+                  <td style={{ ...tdStyle, position: "relative" }}>
+                    <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${(u.escalated_count / maxUserEsc) * 100}%`, background: uvu.brick, opacity: 0.12, borderRadius: 3 }} />
+                    <span style={{ position: "relative", fontWeight: 600 }}>{u.escalated_count}</span>
+                  </td>
+                  <td style={tdStyle}>{u.tier_1_count}</td>
+                  <td style={tdStyle}>{u.tier_2_count}</td>
+                  <td style={{ ...tdStyle, fontSize: "0.8rem", color: uvu.textSecondary }}>{fmtDate(u.latest_event)}</td>
+                </tr>
+              ))}
+              {(stats.top_users ?? []).length === 0 && (
+                <tr><td colSpan={6} style={{ ...tdStyle, color: uvu.textMuted }}>No escalated users yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+          {(stats.top_users ?? []).length > PAGE_SIZE && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, fontSize: "0.8rem", color: uvu.textSecondary }}>
+              <button disabled={userPage === 0} onClick={() => setUserPage(userPage - 1)} style={{ cursor: userPage === 0 ? "default" : "pointer", opacity: userPage === 0 ? 0.4 : 1, background: "none", border: "none", color: uvu.text, fontWeight: 500, fontSize: "0.8rem" }}>Prev</button>
+              <span>{userPage * PAGE_SIZE + 1}–{Math.min((userPage + 1) * PAGE_SIZE, stats.top_users.length)} of {stats.top_users.length}</span>
+              <button disabled={(userPage + 1) * PAGE_SIZE >= stats.top_users.length} onClick={() => setUserPage(userPage + 1)} style={{ cursor: (userPage + 1) * PAGE_SIZE >= stats.top_users.length ? "default" : "pointer", opacity: (userPage + 1) * PAGE_SIZE >= stats.top_users.length ? 0.4 : 1, background: "none", border: "none", color: uvu.text, fontWeight: 500, fontSize: "0.8rem" }}>Next</button>
+            </div>
+          )}
+        </div>
+
+        <div style={card}>
+          <h3 style={{ marginBottom: "1rem", fontSize: "0.95rem", fontWeight: 600 }}>Top SharePoint Sites (Escalated)</h3>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Site</th>
+                <th style={thStyle}>Escalated</th>
+                <th style={thStyle}>Users</th>
+                <th style={thStyle}>T1</th>
+                <th style={thStyle}>T2</th>
+                <th style={thStyle}>Latest</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(stats.top_sites ?? []).slice(sitePage * PAGE_SIZE, (sitePage + 1) * PAGE_SIZE).map((s) => (
+                <tr
+                  key={s.site_url}
+                  style={{ cursor: "pointer" }}
+                  onClick={() => nav(`/events?site_url=${encodeURIComponent(s.site_url)}&hide_reviewed=1`)}
+                  title={s.site_url}
+                >
+                  <td style={{ ...tdStyle, fontWeight: 500, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {parseSiteName(s.site_url)}
+                  </td>
+                  <td style={{ ...tdStyle, position: "relative" }}>
+                    <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${(s.escalated_count / maxSiteEsc) * 100}%`, background: uvu.brick, opacity: 0.12, borderRadius: 3 }} />
+                    <span style={{ position: "relative", fontWeight: 600 }}>{s.escalated_count}</span>
+                  </td>
+                  <td style={tdStyle}>{s.unique_users}</td>
+                  <td style={tdStyle}>{s.tier_1_count}</td>
+                  <td style={tdStyle}>{s.tier_2_count}</td>
+                  <td style={{ ...tdStyle, fontSize: "0.8rem", color: uvu.textSecondary }}>{fmtDate(s.latest_event)}</td>
+                </tr>
+              ))}
+              {(stats.top_sites ?? []).length === 0 && (
+                <tr><td colSpan={6} style={{ ...tdStyle, color: uvu.textMuted }}>No escalated sites yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+          {(stats.top_sites ?? []).length > PAGE_SIZE && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, fontSize: "0.8rem", color: uvu.textSecondary }}>
+              <button disabled={sitePage === 0} onClick={() => setSitePage(sitePage - 1)} style={{ cursor: sitePage === 0 ? "default" : "pointer", opacity: sitePage === 0 ? 0.4 : 1, background: "none", border: "none", color: uvu.text, fontWeight: 500, fontSize: "0.8rem" }}>Prev</button>
+              <span>{sitePage * PAGE_SIZE + 1}–{Math.min((sitePage + 1) * PAGE_SIZE, stats.top_sites.length)} of {stats.top_sites.length}</span>
+              <button disabled={(sitePage + 1) * PAGE_SIZE >= stats.top_sites.length} onClick={() => setSitePage(sitePage + 1)} style={{ cursor: (sitePage + 1) * PAGE_SIZE >= stats.top_sites.length ? "default" : "pointer", opacity: (sitePage + 1) * PAGE_SIZE >= stats.top_sites.length ? 0.4 : 1, background: "none", border: "none", color: uvu.text, fontWeight: 500, fontSize: "0.8rem" }}>Next</button>
+            </div>
           )}
         </div>
       </div>

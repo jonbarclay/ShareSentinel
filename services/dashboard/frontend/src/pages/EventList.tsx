@@ -12,6 +12,7 @@ export default function EventList() {
   const userFilter = params.get("user") ?? "";
   const itemTypeFilter = params.get("item_type") ?? "";
   
+  const siteUrlFilter = params.get("site_url") ?? "";
   const tierFilter = params.get("tier") ?? "";
   const categoryFilter = params.get("category") ?? "";
 
@@ -26,6 +27,7 @@ export default function EventList() {
       if (statusFilter) qs.set("status", statusFilter);
       if (userFilter) qs.set("user", userFilter);
       if (itemTypeFilter) qs.set("item_type", itemTypeFilter);
+      if (siteUrlFilter) qs.set("site_url", siteUrlFilter);
       if (tierFilter) qs.set("tier", tierFilter);
       if (categoryFilter) qs.set("category", categoryFilter);
 
@@ -40,7 +42,7 @@ export default function EventList() {
     fetchEvents();
     const id = setInterval(fetchEvents, 30_000);
     return () => clearInterval(id);
-  }, [page, statusFilter, userFilter, itemTypeFilter, tierFilter, categoryFilter, hideReviewed, onlyReviewed]);
+  }, [page, statusFilter, userFilter, itemTypeFilter, siteUrlFilter, tierFilter, categoryFilter, hideReviewed, onlyReviewed]);
 
   const totalPages = Math.ceil(data.total / 50);
 

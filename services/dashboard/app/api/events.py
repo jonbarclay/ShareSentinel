@@ -43,6 +43,11 @@ async def list_events(
         conditions.append(f"e.item_type = ${idx}")
         params.append(item_type)
         idx += 1
+    site_url = request.query_params.get("site_url")
+    if site_url:
+        conditions.append(f"e.site_url ILIKE ${idx}")
+        params.append(f"%{site_url}%")
+        idx += 1
     if since:
         conditions.append(f"e.received_at > ${idx}")
         params.append(datetime.fromisoformat(since))

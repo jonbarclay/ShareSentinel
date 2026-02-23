@@ -63,6 +63,37 @@ async def get_stats(request: Request):
             GROUP BY escalation_tier
             ORDER BY count DESC
         """)
+        top_users = await conn.fetch("""
+            SELECT e.user_id,
+                   up.display_name,
+                   up.department,
+                   COUNT(*) AS escalated_count,
+                   COUNT(*) FILTER (WHERE v.escalation_tier = 'tier_1') AS tier_1_count,
+                   COUNT(*) FILTER (WHERE v.escalation_tier = 'tier_2') AS tier_2_count,
+                   MAX(e.event_time) AS latest_event
+            FROM events e
+            JOIN verdicts v ON v.event_id = e.event_id
+            LEFT JOIN user_profiles up ON up.user_id = e.user_id
+            WHERE v.escalation_tier IN ('tier_1', 'tier_2')
+              AND e.user_id != 'unknown@unknown.com'
+            GROUP BY e.user_id, up.display_name, up.department
+            ORDER BY escalated_count DESC
+        """)
+        top_sites = await conn.fetch("""
+            SELECT e.site_url,
+                   COUNT(*) AS escalated_count,
+                   COUNT(*) FILTER (WHERE v.escalation_tier = 'tier_1') AS tier_1_count,
+                   COUNT(*) FILTER (WHERE v.escalation_tier = 'tier_2') AS tier_2_count,
+                   COUNT(DISTINCT e.user_id) AS unique_users,
+                   MAX(e.event_time) AS latest_event
+            FROM events e
+            JOIN verdicts v ON v.event_id = e.event_id
+            WHERE v.escalation_tier IN ('tier_1', 'tier_2')
+              AND e.site_url IS NOT NULL
+              AND e.site_url LIKE '%/sites/%'
+            GROUP BY e.site_url
+            ORDER BY escalated_count DESC
+        """)
         recent_escalated = await conn.fetch("""
             SELECT e.event_id, e.file_name, e.user_id,
                    v.escalation_tier, v.category_assessments,
@@ -84,4 +115,6 @@ async def get_stats(request: Request):
         "by_category": [dict(r) for r in by_category],
         "by_tier": [dict(r) for r in by_tier],
         "needs_review": [dict(r) for r in recent_escalated],
+        "top_users": [dict(r) for r in top_users],
+        "top_sites": [dict(r) for r in top_sites],
     }
