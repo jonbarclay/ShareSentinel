@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShareSentinel - Sharing Link Expiration Notice</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f5f7;font-family:Segoe UI,Roboto,Helvetica Neue,Arial,sans-serif;color:#172b4d;font-size:14px;line-height:1.5;">
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f5f7;">
+<tr><td align="center" style="padding:24px 16px;">
+
+<!-- Main card -->
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.12);">
+
+<!-- Banner -->
+{% if is_removal_notice %}
+<tr><td style="background-color:#de350b;padding:20px 24px;color:#ffffff;">
+  <h1 style="margin:0;font-size:20px;font-weight:600;">Sharing Link Removed</h1>
+  <p style="margin:6px 0 0;font-size:14px;opacity:0.9;">The 180-day sharing limit has been reached</p>
+</td></tr>
+{% elif days_remaining <= 2 %}
+<tr><td style="background-color:#de350b;padding:20px 24px;color:#ffffff;">
+  <h1 style="margin:0;font-size:20px;font-weight:600;">Sharing Link Expires in {{ days_remaining }} Day{{ 's' if days_remaining != 1 else '' }}</h1>
+  <p style="margin:6px 0 0;font-size:14px;opacity:0.9;">Immediate action may be required</p>
+</td></tr>
+{% elif days_remaining <= 15 %}
+<tr><td style="background-color:#ff991f;padding:20px 24px;color:#172b4d;">
+  <h1 style="margin:0;font-size:20px;font-weight:600;">Sharing Link Expires in {{ days_remaining }} Days</h1>
+  <p style="margin:6px 0 0;font-size:14px;">The sharing link will be automatically removed on {{ removal_date }}</p>
+</td></tr>
+{% else %}
+<tr><td style="background-color:#0052cc;padding:20px 24px;color:#ffffff;">
+  <h1 style="margin:0;font-size:20px;font-weight:600;">Sharing Link Expires in {{ days_remaining }} Days</h1>
+  <p style="margin:6px 0 0;font-size:14px;opacity:0.9;">The sharing link will be automatically removed on {{ removal_date }}</p>
+</td></tr>
+{% endif %}
+
+<!-- Content area -->
+<tr><td style="padding:24px;">
+
+<p style="margin:0 0 16px;">
+{% if is_removal_notice %}
+Hello {{ user_display_name }},<br><br>
+A sharing link you created has reached the <strong>180-day maximum lifetime</strong> and has been <strong>automatically removed</strong>.
+{% else %}
+Hello {{ user_display_name }},<br><br>
+A sharing link you created will be <strong>automatically removed in {{ days_remaining }} days</strong> as part of the university's 180-day sharing link policy.
+{% endif %}
+</p>
+
+<!-- File Details -->
+<h2 style="margin:0 0 12px;font-size:16px;font-weight:600;color:#172b4d;border-bottom:1px solid #dfe1e6;padding-bottom:8px;">File Details</h2>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;width:140px;vertical-align:top;">File Name</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ file_name }}</td>
+  </tr>
+  {% if file_path %}
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Path</td>
+    <td style="padding:4px 0;color:#172b4d;word-break:break-all;">{{ file_path }}</td>
+  </tr>
+  {% endif %}
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Sharing Scope</td>
+    <td style="padding:4px 0;color:#172b4d;">
+      <span style="display:inline-block;background-color:{% if sharing_scope == 'anonymous' %}#ffebe6{% else %}#deebff{% endif %};color:{% if sharing_scope == 'anonymous' %}#de350b{% else %}#0052cc{% endif %};padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;">{{ sharing_scope }}</span>
+      <span style="margin-left:4px;">{{ sharing_type }}</span>
+    </td>
+  </tr>
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Link Created</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ link_created_date }}</td>
+  </tr>
+  {% if not is_removal_notice %}
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Removal Date</td>
+    <td style="padding:4px 0;color:#172b4d;font-weight:600;">{{ removal_date }}</td>
+  </tr>
+  {% endif %}
+</table>
+
+<!-- What This Means -->
+<h2 style="margin:0 0 12px;font-size:16px;font-weight:600;color:#172b4d;border-bottom:1px solid #dfe1e6;padding-bottom:8px;">
+{% if is_removal_notice %}What Happened{% else %}What This Means{% endif %}
+</h2>
+<div style="background-color:#f4f5f7;border-left:4px solid {% if is_removal_notice %}#de350b{% elif days_remaining <= 7 %}#ff991f{% else %}#0052cc{% endif %};padding:12px 14px;margin-bottom:20px;border-radius:0 4px 4px 0;">
+{% if is_removal_notice %}
+  <p style="margin:0 0 8px;">The sharing link has been removed. The file remains in its original location but is no longer accessible via the shared link.</p>
+  <p style="margin:0;">If you still need to share this file, you can create a new sharing link through OneDrive or SharePoint. The new link will have its own 180-day countdown.</p>
+{% else %}
+  <p style="margin:0 0 8px;">Per university policy, sharing links with broad access (anonymous or organization-wide) are limited to <strong>180 days</strong>.</p>
+  <p style="margin:0;">When the link expires, it will be automatically removed. The file will remain in its original location but will no longer be accessible via the shared link.</p>
+{% endif %}
+</div>
+
+{% if not is_removal_notice %}
+<!-- Notification Schedule -->
+<div style="background-color:#fffae6;border-left:4px solid #ff991f;padding:10px 14px;margin-bottom:20px;border-radius:0 4px 4px 0;font-size:13px;">
+  <strong>Upcoming reminders:</strong> You will receive additional notifications at 30, 15, 7, and 2 days before removal.
+</div>
+{% endif %}
+
+</td></tr>
+
+<!-- Footer -->
+<tr><td style="padding:16px 24px;background-color:#f4f5f7;border-top:1px solid #dfe1e6;font-size:12px;color:#6b778c;">
+  <p style="margin:0 0 6px;">This is an automated notification from ShareSentinel as part of the university's data sharing policy.</p>
+  <p style="margin:0;font-size:11px;color:#97a0af;">If you have questions about this policy, contact the Information Security team. Do not reply to this email.</p>
+</td></tr>
+
+</table>
+<!-- End main card -->
+
+</td></tr>
+</table>
+
+</body>
+</html>

@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 from urllib.parse import urlparse
 
 import httpx
@@ -162,6 +162,49 @@ class GraphClient:
 
         logger.info("Downloaded %s (%d bytes)", dest_path.name, dest_path.stat().st_size)
         return dest_path
+
+    async def list_folder_children(
+        self, drive_id: str, item_id: str, recursive: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Enumerate all files in a folder (and subfolders if *recursive*).
+
+        Returns a flat list of Graph driveItem dicts that have a ``file`` facet.
+        Folders themselves are not included in the result.
+        """
+        accumulator: List[Dict[str, Any]] = []
+        await self._enumerate_children(drive_id, item_id, accumulator, recursive)
+        logger.info(
+            "Enumerated %d files in drive=%s item=%s (recursive=%s)",
+            len(accumulator), drive_id, item_id, recursive,
+        )
+        return accumulator
+
+    async def _enumerate_children(
+        self,
+        drive_id: str,
+        folder_item_id: str,
+        accumulator: List[Dict[str, Any]],
+        recursive: bool,
+    ) -> None:
+        """Recursively list children, accumulating file items."""
+        url: str | None = (
+            f"{GRAPH_BASE}/drives/{drive_id}/items/{folder_item_id}/children"
+            "?$top=200&$select=id,name,size,file,folder,parentReference,webUrl"
+        )
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            while url:
+                resp = await client.get(url, headers=self._headers())
+                self._raise_for_status(resp)
+                data = resp.json()
+                for item in data.get("value", []):
+                    if "file" in item:
+                        accumulator.append(item)
+                    elif "folder" in item and recursive:
+                        child_id = item["id"]
+                        await self._enumerate_children(
+                            drive_id, child_id, accumulator, recursive,
+                        )
+                url = data.get("@odata.nextLink")
 
     async def get_user_profile(self, user_id: str) -> Dict[str, Any]:
         """Fetch user profile from Graph API.

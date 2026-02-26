@@ -31,7 +31,7 @@ class Config:
     vertex_project: str = ""
     vertex_location: str = "us-central1"
     ai_temperature: float = 0.0
-    ai_max_tokens: int = 1024
+    ai_max_tokens: int = 2048
 
     # Processing
     max_file_size_bytes: int = 52_428_800  # 50MB
@@ -65,6 +65,11 @@ class Config:
     user_profile_cache_days: int = 7
     upn_domain: str = "uvu.edu"
 
+    # Second-look AI review
+    second_look_enabled: bool = False
+    second_look_provider: str = "gemini"
+    second_look_model: str = "gemini-3.1-pro-preview"
+
     # Logging
     log_level: str = "INFO"
 
@@ -94,7 +99,7 @@ class Config:
             vertex_project=os.environ.get("VERTEX_PROJECT", ""),
             vertex_location=os.environ.get("VERTEX_LOCATION", "us-central1"),
             ai_temperature=float(os.environ.get("AI_TEMPERATURE", "0")),
-            ai_max_tokens=int(os.environ.get("AI_MAX_TOKENS", "1024")),
+            ai_max_tokens=int(os.environ.get("AI_MAX_TOKENS", "2048")),
             max_file_size_bytes=int(os.environ.get("MAX_FILE_SIZE_BYTES", "52428800")),
             text_content_limit=int(os.environ.get("TEXT_CONTENT_LIMIT", "100000")),
             hash_reuse_days=int(os.environ.get("HASH_REUSE_DAYS", "30")),
@@ -116,6 +121,9 @@ class Config:
             security_email=os.environ.get("SECURITY_EMAIL", "security@uvu.edu"),
             user_profile_cache_days=int(os.environ.get("USER_PROFILE_CACHE_DAYS", "7")),
             upn_domain=os.environ.get("UPN_DOMAIN", "uvu.edu"),
+            second_look_enabled=os.environ.get("SECOND_LOOK_ENABLED", "false").lower() == "true",
+            second_look_provider=os.environ.get("SECOND_LOOK_PROVIDER", "gemini"),
+            second_look_model=os.environ.get("SECOND_LOOK_MODEL", "gemini-3.1-pro-preview"),
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
             prompt_template_dir=os.environ.get("PROMPT_TEMPLATE_DIR", "config/prompt_templates"),
         )

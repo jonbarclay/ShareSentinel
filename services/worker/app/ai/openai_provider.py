@@ -8,7 +8,7 @@ from typing import Dict, List
 import openai
 
 from .base_provider import AnalysisRequest, AnalysisResponse, BaseAIProvider
-from .prompt_manager import SYSTEM_PROMPT, PromptManager
+from .prompt_manager import PromptManager
 from .response_parser import parse_ai_response
 
 logger = logging.getLogger(__name__)
@@ -89,6 +89,9 @@ class OpenAIProvider(BaseAIProvider):
                 processing_time_seconds=processing_time,
                 affected_count=parsed.get("affected_count", 0),
                 pii_types_found=parsed.get("pii_types_found", []),
+                reasoning=parsed.get("reasoning", ""),
+                data_recency=parsed.get("data_recency", "unknown"),
+                risk_score=parsed.get("risk_score", 0),
             )
         except Exception as exc:
             logger.exception("OpenAI analysis failed")
@@ -122,7 +125,7 @@ class OpenAIProvider(BaseAIProvider):
         """Build the messages array for the OpenAI ChatCompletion API."""
         user_prompt = self.prompt_manager.render(request)
 
-        system_msg = {"role": "system", "content": SYSTEM_PROMPT}
+        system_msg = {"role": "system", "content": self.prompt_manager.system_prompt}
 
         if request.mode == "multimodal" and request.images:
             content: list = []

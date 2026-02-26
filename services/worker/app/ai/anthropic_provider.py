@@ -8,7 +8,7 @@ from typing import Dict, List
 import anthropic
 
 from .base_provider import AnalysisRequest, AnalysisResponse, BaseAIProvider
-from .prompt_manager import SYSTEM_PROMPT, PromptManager
+from .prompt_manager import PromptManager
 from .response_parser import parse_ai_response
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ class AnthropicProvider(BaseAIProvider):
                 model=self.model,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
-                system=SYSTEM_PROMPT,
+                system=self.prompt_manager.system_prompt,
                 messages=messages,
             )
 
@@ -77,6 +77,9 @@ class AnthropicProvider(BaseAIProvider):
                 processing_time_seconds=processing_time,
                 affected_count=parsed.get("affected_count", 0),
                 pii_types_found=parsed.get("pii_types_found", []),
+                reasoning=parsed.get("reasoning", ""),
+                data_recency=parsed.get("data_recency", "unknown"),
+                risk_score=parsed.get("risk_score", 0),
             )
         except Exception as exc:
             logger.exception("Anthropic analysis failed")

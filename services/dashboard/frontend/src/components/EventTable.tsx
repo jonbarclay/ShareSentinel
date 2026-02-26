@@ -18,6 +18,7 @@ interface Event {
   failure_reason: string | null;
   escalation_tier: string | null;
   category_assessments: CategoryAssessment[] | null;
+  risk_score: number | null;
   received_at: string;
   analyst_reviewed: boolean | null;
   [key: string]: unknown;
@@ -35,6 +36,7 @@ export default function EventTable({ events }: { events: Event[] }) {
             <th>Type</th>
             <th>Status</th>
             <th>Categories</th>
+            <th>Risk</th>
             <th>Reviewed</th>
             <th>Received</th>
           </tr>
@@ -85,6 +87,23 @@ export default function EventTable({ events }: { events: Event[] }) {
                   tier={e.escalation_tier}
                   categories={e.category_assessments}
                 />
+              </td>
+              <td>
+                {e.risk_score != null && e.risk_score > 0 ? (
+                  <span
+                    className="category-chip"
+                    style={{
+                      backgroundColor: e.risk_score >= 7 ? "#de350b" : e.risk_score >= 4 ? "#ff991f" : "#dfe1e6",
+                      color: e.risk_score >= 7 ? "#fff" : e.risk_score >= 4 ? "#172b4d" : "#6b778c",
+                      minWidth: 24,
+                      textAlign: "center",
+                    }}
+                  >
+                    {e.risk_score}
+                  </span>
+                ) : (
+                  <span className="cell-muted">—</span>
+                )}
               </td>
               <td>
                 {e.analyst_disposition ? (

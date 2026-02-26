@@ -3,7 +3,7 @@
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
     from ..ai.base_provider import CategoryDetection
@@ -44,6 +44,11 @@ class AlertPayload:
     affected_count: int = 0
     pii_types_found: Optional[List[str]] = None
 
+    # v2 prompt fields
+    reasoning: Optional[str] = None
+    data_recency: Optional[str] = None
+    risk_score: int = 0
+
     # Legacy fields kept for backward compat with remediation_report
     sensitivity_rating: Optional[int] = None
     categories_detected: Optional[List[str]] = None
@@ -51,6 +56,13 @@ class AlertPayload:
 
     # Remediation context (populated only for remediation_report)
     permission_details: Optional[List[Dict[str, str]]] = None
+
+    # Folder enumeration summary (only for folder_share_enumerated)
+    child_summaries: Optional[List[Dict[str, Any]]] = None
+    folder_total_files: int = 0
+    folder_flagged_files: int = 0
+    folder_clean_files: int = 0
+    folder_failed_files: int = 0
 
     # Additional context
     filename_flagged: bool = False

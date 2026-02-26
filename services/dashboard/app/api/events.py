@@ -68,6 +68,9 @@ async def list_events(
         params.append(reviewed)
         idx += 1
 
+    # Exclude child events from the main list (they appear under their parent)
+    conditions.append("e.parent_event_id IS NULL")
+
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     offset = (page - 1) * per_page
 
@@ -83,6 +86,7 @@ async def list_events(
             SELECT e.*, v.escalation_tier, v.category_assessments,
                    v.overall_context, v.analysis_mode,
                    v.ai_provider, v.analyst_reviewed, v.analyst_disposition,
+                   v.risk_score,
                    up.display_name AS user_display_name
             FROM events e
             LEFT JOIN verdicts v ON e.event_id = v.event_id
@@ -117,9 +121,48 @@ async def get_event(request: Request, event_id: str):
                 "SELECT * FROM user_profiles WHERE user_id = $1", event["user_id"]
             )
             user_profile = dict(up_row) if up_row else None
+    # Fetch child events if this is a folder (parent)
+    child_events = []
+    if event and event["item_type"] and event["item_type"].lower() == "folder":
+        async with pool.acquire() as conn:
+            child_rows = await conn.fetch(
+                """
+                SELECT e.event_id, e.file_name, e.relative_path, e.status,
+                       e.failure_reason, e.child_index, e.file_size_bytes,
+                       e.mime_type, e.web_url,
+                       v.escalation_tier, v.category_assessments,
+                       v.summary, v.analysis_mode
+                FROM events e
+                LEFT JOIN verdicts v ON e.event_id = v.event_id
+                WHERE e.parent_event_id = $1
+                ORDER BY e.child_index
+                """,
+                event_id,
+            )
+            child_events = [dict(r) for r in child_rows]
+
+    # Fetch sharing link lifecycle records
+    lifecycle_records = []
+    if event:
+        async with pool.acquire() as conn:
+            lc_rows = await conn.fetch(
+                """
+                SELECT link_created_at, ms_expiration_at, status,
+                       link_created_at + INTERVAL '180 days' AS enforced_expiration_at,
+                       file_name, sharing_scope, sharing_type, link_url, permission_id
+                FROM sharing_link_lifecycle
+                WHERE event_id = $1
+                ORDER BY link_created_at
+                """,
+                event_id,
+            )
+            lifecycle_records = [dict(r) for r in lc_rows]
+
     return {
         "event": dict(event) if event else None,
         "verdict": dict(verdict) if verdict else None,
         "audit_log": [dict(r) for r in audit_rows],
         "user_profile": user_profile,
+        "child_events": child_events,
+        "lifecycle": lifecycle_records,
     }

@@ -66,6 +66,11 @@ services:
       - AI_TEMPERATURE=${AI_TEMPERATURE:-0}
       - AI_MAX_TOKENS=${AI_MAX_TOKENS:-1024}
 
+      # Second-Look AI Review
+      - SECOND_LOOK_ENABLED=${SECOND_LOOK_ENABLED:-false}
+      - SECOND_LOOK_PROVIDER=${SECOND_LOOK_PROVIDER:-gemini}
+      - SECOND_LOOK_MODEL=${SECOND_LOOK_MODEL:-gemini-3.1-pro-preview}
+
       # Processing
       - MAX_FILE_SIZE_BYTES=${MAX_FILE_SIZE_BYTES:-52428800}
       - TEXT_CONTENT_LIMIT=${TEXT_CONTENT_LIMIT:-100000}
@@ -134,6 +139,61 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  lifecycle-cron:
+    build:
+      context: ./services/lifecycle-cron
+      dockerfile: Dockerfile
+    container_name: sharesentinel-lifecycle-cron
+    environment:
+      # Database
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-sharesentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharesentinel}
+
+      # Redis (audit log poller)
+      - REDIS_URL=redis://redis:6379/0
+
+      # Microsoft Graph API
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+      - AZURE_CERTIFICATE=/app/certs/JonPnPCert.pfx
+      - AZURE_CERTIFICATE_PASS=${AZURE_CERTIFICATE_PASS}
+
+      # Notifications
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_USE_TLS=${SMTP_USE_TLS:-true}
+      - EMAIL_FROM=${EMAIL_FROM}
+      - SECURITY_EMAIL=${SECURITY_EMAIL:-security@uvu.edu}
+
+      # Lifecycle settings
+      - LIFECYCLE_CHECK_INTERVAL_HOURS=${LIFECYCLE_CHECK_INTERVAL_HOURS:-24}
+      - LIFECYCLE_MAX_DAYS=${LIFECYCLE_MAX_DAYS:-180}
+
+      # Audit log polling
+      - AUDIT_POLL_ENABLED=${AUDIT_POLL_ENABLED:-true}
+      - AUDIT_POLL_INTERVAL_MINUTES=${AUDIT_POLL_INTERVAL_MINUTES:-15}
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./config:/app/config:ro
+      - ${AZURE_CERTIFICATE:-./JonPnPCert.pfx}:/app/certs/JonPnPCert.pfx:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - sharesentinel
     logging:
       driver: json-file
       options:

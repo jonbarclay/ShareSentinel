@@ -15,6 +15,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   security_credentials: "Credentials",
   hr_personnel: "HR/Personnel",
   legal_confidential: "Legal",
+  sensitive_personal: "Sensitive Personal",
   pii_contact: "Contact PII",
   coursework: "Coursework",
   casual_personal: "Personal",

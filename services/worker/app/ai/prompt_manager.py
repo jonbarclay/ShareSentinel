@@ -57,7 +57,7 @@ class PromptManager:
 
     def _load_templates(self) -> None:
         """Parse the sensitivity_analysis.txt template into per-mode sections."""
-        template_path = self.template_dir / "sensitivity_analysis.txt"
+        template_path = self.template_dir / "sensitivity_analysis_v2.txt"
         if not template_path.exists():
             logger.warning(
                 "Prompt template not found at %s; using built-in defaults",
@@ -72,11 +72,16 @@ class PromptManager:
         for section in sections:
             if not section.strip():
                 continue
-            # Check for system prompt section
-            if section.startswith("SYSTEM PROMPT"):
-                # Everything after the header line is the system prompt
-                lines = section.split("###", 1)
-                body = lines[0].replace("SYSTEM PROMPT", "", 1).strip()
+            # Check for system prompt section (may start with "### SYSTEM PROMPT ###")
+            stripped = section.strip().lstrip("#").strip()
+            if stripped.startswith("SYSTEM PROMPT"):
+                # Everything after the "### SYSTEM PROMPT ###" header
+                # Remove the header line, then take the body
+                idx = section.find("###", section.find("SYSTEM PROMPT"))
+                if idx != -1:
+                    body = section[idx + 3:].strip()
+                else:
+                    body = stripped.replace("SYSTEM PROMPT", "", 1).strip()
                 if body:
                     self._system_prompt = body
                 continue

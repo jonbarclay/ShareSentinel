@@ -71,6 +71,30 @@ def create_ai_provider(config: Config) -> BaseAIProvider:
         raise ValueError(f"Unknown AI provider: {config.ai_provider}")
 
 
+def create_second_look_provider(config: Config) -> Optional[BaseAIProvider]:
+    """Build the second-look AI provider, or None if disabled."""
+    if not config.second_look_enabled:
+        return None
+
+    prompt_manager = PromptManager(template_dir=config.prompt_template_dir)
+
+    if config.second_look_provider.lower() == "gemini":
+        provider = GeminiProvider(
+            api_key=config.gemini_api_key,
+            model=config.second_look_model,
+            prompt_manager=prompt_manager,
+            max_tokens=config.ai_max_tokens,
+            temperature=0.0,
+            project=config.vertex_project,
+            location=config.vertex_location,
+        )
+    else:
+        raise ValueError(f"Unsupported second-look provider: {config.second_look_provider}")
+
+    logger.info("Second-look provider ready: %s (%s)", config.second_look_provider, config.second_look_model)
+    return provider
+
+
 def create_notification_dispatcher(config: Config) -> NotificationDispatcher:
     """Build a NotificationDispatcher with all configured channels."""
     notifiers: List[BaseNotifier] = []
@@ -171,6 +195,9 @@ async def main() -> None:
     ai_provider = create_ai_provider(config)
     logger.info("AI provider ready: %s (%s)", config.ai_provider, ai_provider.get_model_name())
 
+    # Second-look AI provider
+    second_look_provider = create_second_look_provider(config)
+
     # Notification dispatcher
     notifier_dispatcher = create_notification_dispatcher(config)
     logger.info(
@@ -231,6 +258,7 @@ async def main() -> None:
                 redis=redis_conn,
                 ai_provider=ai_provider,
                 notifier_dispatcher=notifier_dispatcher,
+                second_look_provider=second_look_provider,
             )
 
         except json.JSONDecodeError as exc:

@@ -13,6 +13,7 @@ from ..config import Config
 from ..database.repositories import AuditLogRepository, EventRepository, UserProfileRepository
 from ..graph_api.client import GraphClient
 from ..graph_api.sharing import extract_all_sharing_links, extract_sharing_link, get_sharing_permissions
+from ..lifecycle.enrollment import enroll_sharing_links
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,26 @@ class MetadataPrescreen:
                     event_id,
                     exc_info=True,
                 )
+            else:
+                # Enroll sharing links into lifecycle tracking (non-blocking)
+                try:
+                    event_time = getattr(job, "event_time", None)
+                    await enroll_sharing_links(
+                        db_pool=event_repo._pool,
+                        permissions=permissions,
+                        event_id=event_id,
+                        user_id=getattr(job, "user_id", ""),
+                        drive_id=drive_id,
+                        item_id=item_id,
+                        file_name=name,
+                        event_time=event_time,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Lifecycle enrollment failed for event_id=%s",
+                        event_id,
+                        exc_info=True,
+                    )
 
         # 3. Check filename against sensitivity keywords
         filename_flagged, matched_keywords = self.check_filename_keywords(

@@ -1,0 +1,16 @@
+# Database
+asyncpg>=0.29.0
+
+# Microsoft Graph API
+httpx>=0.25.0
+msal>=1.25.0
+cryptography>=42.0.0
+
+# Email
+jinja2>=3.1.0
+
+# Redis (audit log poller)
+redis>=5.0.0
+
+# Logging
+python-json-logger>=2.0.0

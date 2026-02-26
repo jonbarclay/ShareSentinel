@@ -56,12 +56,13 @@ def extract_sharing_link(permissions: List[Dict[str, Any]]) -> Optional[str]:
 
 def extract_all_sharing_links(
     permissions: List[Dict[str, Any]],
-) -> List[Dict[str, str]]:
-    """Return all anonymous/org-wide sharing links with scope and permission labels.
+) -> List[Dict[str, Any]]:
+    """Return all anonymous/org-wide sharing links with scope, permission labels, and metadata.
 
-    Each entry: ``{"url": "...", "scope": "...", "type": "...", "label": "OrgEdit"}``.
+    Each entry includes ``permission_id`` and ``expiration_date`` from the
+    Graph API permission object (both may be None).
     """
-    results: List[Dict[str, str]] = []
+    results: List[Dict[str, Any]] = []
     for perm in permissions:
         link = perm.get("link")
         if not link:
@@ -74,10 +75,16 @@ def extract_all_sharing_links(
             continue
         link_type = link.get("type", "view").lower()
         label = scope.capitalize() + link_type.capitalize()
+        expiration = perm.get("expirationDateTime")
+        # Normalize the Graph sentinel "0001-01-01T00:00:00Z" to None
+        if expiration and str(expiration).startswith("0001-01-01"):
+            expiration = None
         results.append({
             "url": web_url,
             "scope": scope,
             "type": link_type,
             "label": label,
+            "permission_id": perm.get("id"),
+            "expiration_date": expiration,
         })
     return results

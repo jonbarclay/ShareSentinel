@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 VALID_CONFIDENCES = {"high", "medium", "low"}
 VALID_CONTEXTS = {"coursework", "institutional", "personal", "mixed"}
+VALID_DATA_RECENCY = {"current", "recent", "historical", "unknown"}
 
 # Maps off-taxonomy category IDs the AI may produce to correct taxonomy IDs
 CATEGORY_NORMALIZATION = {
@@ -60,6 +61,10 @@ CATEGORY_NORMALIZATION = {
     "confidential_financial_information": "none",
     "business_financial": "none",
     "financial_model": "none",
+    # sensitive_personal variants
+    "personal_sensitive": "sensitive_personal",
+    "sensitive_personal_info": "sensitive_personal",
+    "sensitive_personal_data": "sensitive_personal",
 }
 
 
@@ -144,6 +149,21 @@ def parse_ai_response(raw_text: str) -> Dict:
         pii_types_found = []
     pii_types_found = [str(t).lower().strip() for t in pii_types_found]
 
+    # Parse v2 fields
+    reasoning = str(parsed.get("reasoning", ""))[:2000]
+
+    data_recency = str(parsed.get("data_recency", "unknown")).lower().strip()
+    if data_recency not in VALID_DATA_RECENCY:
+        data_recency = "unknown"
+
+    risk_score = parsed.get("risk_score", 0)
+    if not isinstance(risk_score, (int, float)):
+        try:
+            risk_score = int(risk_score)
+        except (ValueError, TypeError):
+            risk_score = 0
+    risk_score = max(0, min(10, int(risk_score)))
+
     return {
         "categories": categories,
         "context": context,
@@ -151,6 +171,9 @@ def parse_ai_response(raw_text: str) -> Dict:
         "recommendation": str(parsed.get("recommendation", ""))[:1000],
         "affected_count": affected_count,
         "pii_types_found": pii_types_found,
+        "reasoning": reasoning,
+        "data_recency": data_recency,
+        "risk_score": risk_score,
     }
 
 

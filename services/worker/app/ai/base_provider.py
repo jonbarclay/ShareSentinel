@@ -4,7 +4,7 @@ import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ TIER_1: FrozenSet[str] = frozenset({
 TIER_2: FrozenSet[str] = frozenset({
     "hr_personnel",
     "legal_confidential",
+    "sensitive_personal",
 })
 
 TIER_3: FrozenSet[str] = frozenset({
@@ -46,6 +47,7 @@ CATEGORY_LABELS: Dict[str, str] = {
     "security_credentials": "Security Credentials",
     "hr_personnel": "HR/Personnel Records",
     "legal_confidential": "Legal/Confidential Documents",
+    "sensitive_personal": "Sensitive Personal Content",
     "pii_contact": "Personal Identifiable Information",
     "directory_info": "Institutional/Directory Info",
     "coursework": "Coursework/Sample Data",
@@ -54,7 +56,7 @@ CATEGORY_LABELS: Dict[str, str] = {
 }
 
 # PII type sets for escalation rules
-GOVERNMENT_ID_PII: FrozenSet[str] = frozenset({"ssn", "passport", "drivers_license"})
+GOVERNMENT_ID_PII: FrozenSet[str] = frozenset({"ssn", "passport", "drivers_license", "itin"})
 RICH_PII: FrozenSet[str] = frozenset({
     "phone", "home_address", "age",
     "financial_data", "financial_account", "salary", "medical",
@@ -290,6 +292,10 @@ class AnalysisResponse:
     pii_types_found: List[str] = field(default_factory=list)
     success: bool = True
     error: Optional[str] = None
+    reasoning: str = ""
+    data_recency: str = "unknown"
+    risk_score: int = 0
+    second_look: Optional[Dict[str, Any]] = None
 
     @property
     def category_ids(self) -> Set[str]:

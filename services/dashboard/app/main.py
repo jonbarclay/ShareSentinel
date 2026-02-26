@@ -7,7 +7,7 @@ from pathlib import Path
 import asyncpg
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import events, verdicts, stats, audit
@@ -62,4 +62,8 @@ if STATIC_DIR.is_dir():
         file = STATIC_DIR / full_path
         if file.is_file():
             return FileResponse(file)
-        return FileResponse(INDEX_HTML)
+        return HTMLResponse(
+            content=INDEX_HTML.read_bytes(),
+            media_type="text/html",
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+        )

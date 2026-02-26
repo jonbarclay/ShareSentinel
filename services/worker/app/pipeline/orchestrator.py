@@ -43,6 +43,7 @@ from ..graph_api.client import AccessDeniedError, FileNotFoundError as GraphFile
 from .hasher import FileHasher
 from .metadata import MetadataPrescreen
 from .retry import retry_with_backoff
+from .second_look import needs_second_look, run_second_look
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ async def process_job(
     redis: Any,
     ai_provider: BaseAIProvider,
     notifier_dispatcher: NotificationDispatcher,
+    second_look_provider: Optional[BaseAIProvider] = None,
 ) -> None:
     """Execute the full 12-step pipeline for a single sharing event.
 
@@ -111,8 +113,9 @@ async def process_job(
         if item_type.lower() == "folder":
             logger.info("[%s] Step 2: Folder share detected", event_id)
             await _handle_folder_share(
-                job, event_id, config, event_repo, verdict_repo,
-                audit_repo, notifier_dispatcher, metadata,
+                job, event_id, config, db_pool,
+                event_repo, verdict_repo, file_hash_repo, audit_repo,
+                ai_provider, notifier_dispatcher, second_look_provider,
             )
             return
 
@@ -122,213 +125,12 @@ async def process_job(
         await audit_repo.log(event_id, "classify_item", {"item_type": item_type, "result": "file"})
 
         # ----------------------------------------------------------------
-        # Step 3: Metadata Pre-screen
+        # Steps 3-11: Delegate to _process_single_file
         # ----------------------------------------------------------------
-        graph_client = GraphClient(
-            auth=_build_graph_auth(config),
-        )
-        prescreener = MetadataPrescreen()
-        try:
-            metadata = await retry_with_backoff(
-                prescreener.fetch_metadata,
-                job, graph_client, event_repo, audit_repo,
-                config.user_profile_cache_days, config.upn_domain,
-            )
-        except GraphFileNotFoundError:
-            logger.warning("[%s] Step 3: Item no longer exists (404)", event_id)
-            await audit_repo.log(event_id, "metadata_failed", {"reason": "file_not_found"}, status="error")
-            await event_repo.update_event_status(event_id, "completed", failure_reason="file_not_found")
-            return
-        except (AccessDeniedError, GraphAPIError, httpx.HTTPStatusError) as exc:
-            status_code = getattr(exc, "status_code", 0)
-            if isinstance(exc, httpx.HTTPStatusError):
-                status_code = exc.response.status_code
-            logger.warning("[%s] Step 3: Metadata fetch failed (HTTP %s: %s), falling back to filename-only", event_id, status_code, exc)
-            await audit_repo.log(
-                event_id, "metadata_failed",
-                {"reason": "graph_api_error", "status_code": status_code},
-                status="error",
-            )
-            # Fall back to filename-only analysis using job data
-            metadata = {
-                "name": getattr(job, "file_name", "") or "",
-                "size": 0,
-                "parent_path": getattr(job, "relative_path", "") or "",
-            }
-            analysis_mode = "filename_only"
-            request = _build_filename_only_request(job, metadata, classification=None)
-            analysis_response = await _run_ai_analysis(
-                ai_provider, request, event_id, audit_repo,
-            )
-            await _record_and_notify(
-                event_id, analysis_response, analysis_mode, config,
-                event_repo, verdict_repo, file_hash_repo, audit_repo,
-                notifier_dispatcher, job, metadata, file_hash,
-            )
-            return
-        logger.info("[%s] Step 3: Metadata fetched (size=%s)", event_id, metadata.get("size"))
-
-        # ----------------------------------------------------------------
-        # Steps 4 + 5: Apply Exclusion Rules & Check File Size
-        # ----------------------------------------------------------------
-        classifier = FileClassifier()
-        file_name = metadata.get("name", getattr(job, "file_name", ""))
-        file_size = metadata.get("size", 0)
-        classification = classifier.classify(file_name, "File", file_size, config)
-
-        await audit_repo.log(event_id, "classification", {
-            "category": classification.category.value,
-            "action": classification.action.value,
-            "reason": classification.reason,
-        })
-        logger.info(
-            "[%s] Steps 4-5: Classified as %s -> %s",
-            event_id, classification.category.value, classification.action.value,
-        )
-
-        # Short-circuit paths that skip download
-        if classification.action == Action.FILENAME_ONLY:
-            analysis_mode = "filename_only"
-            request = _build_filename_only_request(job, metadata, classification)
-            analysis_response = await _run_ai_analysis(
-                ai_provider, request, event_id, audit_repo,
-            )
-            await _record_and_notify(
-                event_id, analysis_response, analysis_mode, config,
-                event_repo, verdict_repo, file_hash_repo, audit_repo,
-                notifier_dispatcher, job, metadata, file_hash,
-            )
-            return
-
-        # ----------------------------------------------------------------
-        # Step 6: Download File
-        # ----------------------------------------------------------------
-        drive_id = metadata.get("drive_id", "")
-        item_id = metadata.get("item_id", "")
-
-        downloader = FileDownloader()
-        try:
-            downloaded_file = await retry_with_backoff(
-                downloader.download,
-                drive_id, item_id, event_id, file_name, graph_client, config,
-            )
-        except DownloadError as exc:
-            logger.warning("[%s] Step 6: Download failed reason=%s", event_id, exc.reason)
-            await audit_repo.log(event_id, "download_failed", {"reason": exc.reason}, status="error", error=str(exc))
-
-            if exc.reason == "file_not_found":
-                await event_repo.update_event_status(
-                    event_id, "completed", failure_reason="file_not_found",
-                )
-                await audit_repo.log(event_id, "pipeline_complete", {"outcome": "file_not_found"})
-                return
-
-            if exc.reason == "access_denied":
-                await event_repo.update_event_status(
-                    event_id, "completed", failure_reason="access_denied",
-                )
-                await _notify_failure(
-                    event_id, "access_denied", job, metadata, config,
-                    notifier_dispatcher, audit_repo,
-                )
-                return
-
-            # Other download failures: fall back to filename-only analysis
-            analysis_mode = "filename_only"
-            request = _build_filename_only_request(job, metadata, classification)
-            analysis_response = await _run_ai_analysis(
-                ai_provider, request, event_id, audit_repo,
-            )
-            await _record_and_notify(
-                event_id, analysis_response, analysis_mode, config,
-                event_repo, verdict_repo, file_hash_repo, audit_repo,
-                notifier_dispatcher, job, metadata, file_hash,
-            )
-            return
-
-        await audit_repo.log(event_id, "file_downloaded", {
-            "path": str(downloaded_file),
-            "size": downloaded_file.stat().st_size,
-        })
-        logger.info("[%s] Step 6: Downloaded to %s", event_id, downloaded_file)
-
-        # ----------------------------------------------------------------
-        # Step 7: Hash + Dedup
-        # ----------------------------------------------------------------
-        hasher = FileHasher()
-        file_hash = hasher.compute_hash(downloaded_file)
-
-        reuse_match = await hasher.check_reuse(file_hash, file_hash_repo, config.hash_reuse_days)
-        if reuse_match:
-            logger.info("[%s] Step 7: Hash reuse match, previous_event=%s", event_id, reuse_match.get("first_event_id"))
-            # Reconstruct categories from stored category_ids
-            from ..ai.base_provider import CategoryDetection
-            stored_cat_ids = reuse_match.get("category_ids") or []
-            if isinstance(stored_cat_ids, str):
-                import json as _json
-                try:
-                    stored_cat_ids = _json.loads(stored_cat_ids)
-                except (ValueError, TypeError):
-                    stored_cat_ids = []
-            reused_categories = [
-                CategoryDetection(id=cid, confidence="high", evidence="reused from previous analysis")
-                for cid in stored_cat_ids
-            ] if stored_cat_ids else []
-
-            # Build a synthetic AnalysisResponse from the reused verdict
-            analysis_response = AnalysisResponse(
-                categories=reused_categories,
-                context="mixed",
-                summary=f"Hash reuse: identical file previously analysed (event {reuse_match.get('first_event_id', 'unknown')}). Categories reused.",
-                recommendation="See original verdict for full details.",
-                raw_response="",
-                provider="hash_reuse",
-                model="n/a",
-                input_tokens=0,
-                output_tokens=0,
-                estimated_cost_usd=0.0,
-                processing_time_seconds=0.0,
-            )
-            analysis_mode = "hash_reuse"
-            await audit_repo.log(event_id, "hash_reuse", {
-                "file_hash": file_hash,
-                "original_event_id": reuse_match.get("first_event_id"),
-                "reused_categories": [c.id for c in reused_categories],
-            })
-
-            await _record_and_notify(
-                event_id, analysis_response, analysis_mode, config,
-                event_repo, verdict_repo, file_hash_repo, audit_repo,
-                notifier_dispatcher, job, metadata, file_hash,
-            )
-            return
-
-        await audit_repo.log(event_id, "hash_computed", {"file_hash": file_hash, "reuse": False})
-        logger.info("[%s] Step 7: New content hash=%s...%s", event_id, file_hash[:8], file_hash[-4:])
-
-        # ----------------------------------------------------------------
-        # Step 8: Extract Content
-        # ----------------------------------------------------------------
-        request = await _extract_and_build_request(
-            downloaded_file, file_name, file_size, classification,
-            job, metadata, event_id, audit_repo,
-        )
-        analysis_mode = request.mode
-
-        # ----------------------------------------------------------------
-        # Step 9: AI Analysis
-        # ----------------------------------------------------------------
-        analysis_response = await _run_ai_analysis(
-            ai_provider, request, event_id, audit_repo,
-        )
-
-        # ----------------------------------------------------------------
-        # Steps 10-11: Record Verdict & Notify
-        # ----------------------------------------------------------------
-        await _record_and_notify(
-            event_id, analysis_response, analysis_mode, config,
+        await _process_single_file(
+            event_id, job, config,
             event_repo, verdict_repo, file_hash_repo, audit_repo,
-            notifier_dispatcher, job, metadata, file_hash,
+            ai_provider, notifier_dispatcher, second_look_provider,
         )
 
     except Exception:
@@ -405,11 +207,544 @@ async def _current_status(event_repo: EventRepository, event_id: str) -> str:
 
 
 # ------------------------------------------------------------------
+# Reusable single-file processor (used by process_job and folder enumeration)
+# ------------------------------------------------------------------
+
+
+async def _process_single_file(
+    event_id: str,
+    job: _DictJob,
+    config: Config,
+    event_repo: EventRepository,
+    verdict_repo: VerdictRepository,
+    file_hash_repo: FileHashRepository,
+    audit_repo: AuditLogRepository,
+    ai_provider: BaseAIProvider,
+    notifier_dispatcher: NotificationDispatcher,
+    second_look_provider: Optional[BaseAIProvider] = None,
+    skip_notification: bool = False,
+    prefetched_metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[AnalysisResponse]:
+    """Run the file-processing pipeline (steps 3-11) for a single file.
+
+    When called for a folder child:
+    - *prefetched_metadata* provides drive_id, item_id, name, size, mime_type
+      so we skip the Graph metadata fetch.
+    - *skip_notification* suppresses per-file notifications (the folder handler
+      sends a single summary notification instead).
+
+    Returns the AnalysisResponse, or None on unhandled failure.
+    """
+    downloaded_file: Optional[Path] = None
+    file_hash: Optional[str] = None
+    metadata: Dict[str, Any] = {}
+    classification: Optional[ClassificationResult] = None
+    analysis_response: Optional[AnalysisResponse] = None
+    analysis_mode: str = "filename_only"
+
+    try:
+        # ----------------------------------------------------------------
+        # Step 3: Metadata Pre-screen
+        # ----------------------------------------------------------------
+        if prefetched_metadata is not None:
+            metadata = prefetched_metadata
+            await audit_repo.log(event_id, "metadata_prefetched", {
+                "name": metadata.get("name"),
+                "size": metadata.get("size"),
+            })
+            logger.info("[%s] Step 3: Using prefetched metadata (size=%s)", event_id, metadata.get("size"))
+        else:
+            graph_client = GraphClient(auth=_build_graph_auth(config))
+            prescreener = MetadataPrescreen()
+            try:
+                metadata = await retry_with_backoff(
+                    prescreener.fetch_metadata,
+                    job, graph_client, event_repo, audit_repo,
+                    config.user_profile_cache_days, config.upn_domain,
+                )
+            except GraphFileNotFoundError:
+                logger.warning("[%s] Step 3: Item no longer exists (404)", event_id)
+                await audit_repo.log(event_id, "metadata_failed", {"reason": "file_not_found"}, status="error")
+                await event_repo.update_event_status(event_id, "completed", failure_reason="file_not_found")
+                return None
+            except (AccessDeniedError, GraphAPIError, httpx.HTTPStatusError) as exc:
+                status_code = getattr(exc, "status_code", 0)
+                if isinstance(exc, httpx.HTTPStatusError):
+                    status_code = exc.response.status_code
+                logger.warning("[%s] Step 3: Metadata fetch failed (HTTP %s: %s), falling back to filename-only", event_id, status_code, exc)
+                await audit_repo.log(
+                    event_id, "metadata_failed",
+                    {"reason": "graph_api_error", "status_code": status_code},
+                    status="error",
+                )
+                metadata = {
+                    "name": getattr(job, "file_name", "") or "",
+                    "size": 0,
+                    "parent_path": getattr(job, "relative_path", "") or "",
+                }
+                analysis_mode = "filename_only"
+                request = _build_filename_only_request(job, metadata, classification=None)
+                analysis_response = await _run_ai_analysis(ai_provider, request, event_id, audit_repo)
+                await _record_and_notify(
+                    event_id, analysis_response, analysis_mode, config,
+                    event_repo, verdict_repo, file_hash_repo, audit_repo,
+                    notifier_dispatcher, job, metadata, file_hash,
+                    skip_notification=skip_notification,
+                )
+                return analysis_response
+            logger.info("[%s] Step 3: Metadata fetched (size=%s)", event_id, metadata.get("size"))
+
+        # ----------------------------------------------------------------
+        # Steps 4 + 5: Apply Exclusion Rules & Check File Size
+        # ----------------------------------------------------------------
+        classifier = FileClassifier()
+        file_name = metadata.get("name", getattr(job, "file_name", ""))
+        file_size = metadata.get("size", 0)
+        classification = classifier.classify(file_name, "File", file_size, config)
+
+        await audit_repo.log(event_id, "classification", {
+            "category": classification.category.value,
+            "action": classification.action.value,
+            "reason": classification.reason,
+        })
+        logger.info(
+            "[%s] Steps 4-5: Classified as %s -> %s",
+            event_id, classification.category.value, classification.action.value,
+        )
+
+        # Short-circuit paths that skip download
+        if classification.action == Action.FILENAME_ONLY:
+            analysis_mode = "filename_only"
+            request = _build_filename_only_request(job, metadata, classification)
+            analysis_response = await _run_ai_analysis(ai_provider, request, event_id, audit_repo)
+            await _record_and_notify(
+                event_id, analysis_response, analysis_mode, config,
+                event_repo, verdict_repo, file_hash_repo, audit_repo,
+                notifier_dispatcher, job, metadata, file_hash,
+                skip_notification=skip_notification,
+            )
+            return analysis_response
+
+        # ----------------------------------------------------------------
+        # Step 6: Download File
+        # ----------------------------------------------------------------
+        drive_id = metadata.get("drive_id", "")
+        item_id = metadata.get("item_id", "")
+
+        if not prefetched_metadata:
+            graph_client = GraphClient(auth=_build_graph_auth(config))
+        else:
+            graph_client = GraphClient(auth=_build_graph_auth(config))
+
+        downloader = FileDownloader()
+        try:
+            downloaded_file = await retry_with_backoff(
+                downloader.download,
+                drive_id, item_id, event_id, file_name, graph_client, config,
+            )
+        except DownloadError as exc:
+            logger.warning("[%s] Step 6: Download failed reason=%s", event_id, exc.reason)
+            await audit_repo.log(event_id, "download_failed", {"reason": exc.reason}, status="error", error=str(exc))
+
+            if exc.reason == "file_not_found":
+                await event_repo.update_event_status(event_id, "completed", failure_reason="file_not_found")
+                return None
+
+            if exc.reason == "access_denied":
+                await event_repo.update_event_status(event_id, "completed", failure_reason="access_denied")
+                return None
+
+            # Other download failures: fall back to filename-only analysis
+            analysis_mode = "filename_only"
+            request = _build_filename_only_request(job, metadata, classification)
+            analysis_response = await _run_ai_analysis(ai_provider, request, event_id, audit_repo)
+            await _record_and_notify(
+                event_id, analysis_response, analysis_mode, config,
+                event_repo, verdict_repo, file_hash_repo, audit_repo,
+                notifier_dispatcher, job, metadata, file_hash,
+                skip_notification=skip_notification,
+            )
+            return analysis_response
+
+        await audit_repo.log(event_id, "file_downloaded", {
+            "path": str(downloaded_file),
+            "size": downloaded_file.stat().st_size,
+        })
+        logger.info("[%s] Step 6: Downloaded to %s", event_id, downloaded_file)
+
+        # ----------------------------------------------------------------
+        # Step 7: Hash + Dedup
+        # ----------------------------------------------------------------
+        hasher = FileHasher()
+        file_hash = hasher.compute_hash(downloaded_file)
+
+        reuse_match = await hasher.check_reuse(file_hash, file_hash_repo, config.hash_reuse_days)
+        if reuse_match:
+            logger.info("[%s] Step 7: Hash reuse match, previous_event=%s", event_id, reuse_match.get("first_event_id"))
+            from ..ai.base_provider import CategoryDetection
+            stored_cat_ids = reuse_match.get("category_ids") or []
+            if isinstance(stored_cat_ids, str):
+                import json as _json
+                try:
+                    stored_cat_ids = _json.loads(stored_cat_ids)
+                except (ValueError, TypeError):
+                    stored_cat_ids = []
+            reused_categories = [
+                CategoryDetection(id=cid, confidence="high", evidence="reused from previous analysis")
+                for cid in stored_cat_ids
+            ] if stored_cat_ids else []
+
+            analysis_response = AnalysisResponse(
+                categories=reused_categories,
+                context="mixed",
+                summary=f"Hash reuse: identical file previously analysed (event {reuse_match.get('first_event_id', 'unknown')}). Categories reused.",
+                recommendation="See original verdict for full details.",
+                raw_response="",
+                provider="hash_reuse",
+                model="n/a",
+                input_tokens=0,
+                output_tokens=0,
+                estimated_cost_usd=0.0,
+                processing_time_seconds=0.0,
+            )
+            analysis_mode = "hash_reuse"
+            await audit_repo.log(event_id, "hash_reuse", {
+                "file_hash": file_hash,
+                "original_event_id": reuse_match.get("first_event_id"),
+                "reused_categories": [c.id for c in reused_categories],
+            })
+
+            await _record_and_notify(
+                event_id, analysis_response, analysis_mode, config,
+                event_repo, verdict_repo, file_hash_repo, audit_repo,
+                notifier_dispatcher, job, metadata, file_hash,
+                skip_notification=skip_notification,
+            )
+            return analysis_response
+
+        await audit_repo.log(event_id, "hash_computed", {"file_hash": file_hash, "reuse": False})
+        logger.info("[%s] Step 7: New content hash=%s...%s", event_id, file_hash[:8], file_hash[-4:])
+
+        # ----------------------------------------------------------------
+        # Step 8: Extract Content
+        # ----------------------------------------------------------------
+        request = await _extract_and_build_request(
+            downloaded_file, file_name, file_size, classification,
+            job, metadata, event_id, audit_repo,
+        )
+        analysis_mode = request.mode
+
+        # ----------------------------------------------------------------
+        # Step 9: AI Analysis
+        # ----------------------------------------------------------------
+        analysis_response = await _run_ai_analysis(ai_provider, request, event_id, audit_repo)
+
+        # ----------------------------------------------------------------
+        # Step 9b: Second-Look Review (optional)
+        # ----------------------------------------------------------------
+        if (second_look_provider
+                and config.second_look_enabled
+                and needs_second_look(analysis_response, analysis_mode)):
+            analysis_response = await run_second_look(
+                second_look_provider, request, analysis_response,
+                event_id, audit_repo,
+            )
+
+        # ----------------------------------------------------------------
+        # Steps 10-11: Record Verdict & Notify
+        # ----------------------------------------------------------------
+        await _record_and_notify(
+            event_id, analysis_response, analysis_mode, config,
+            event_repo, verdict_repo, file_hash_repo, audit_repo,
+            notifier_dispatcher, job, metadata, file_hash,
+            skip_notification=skip_notification,
+        )
+        return analysis_response
+
+    except Exception:
+        logger.exception("[%s] _process_single_file failed", event_id)
+        try:
+            await event_repo.update_event_status(event_id, "failed", failure_reason="unhandled_exception")
+            await audit_repo.log(event_id, "child_processing_failed", status="error", error="Unhandled exception")
+        except Exception:
+            logger.exception("[%s] Failed to update child status after error", event_id)
+        return None
+    finally:
+        if downloaded_file:
+            Cleanup.cleanup_event_files(event_id, config.tmpfs_path)
+
+
+# ------------------------------------------------------------------
 # Step 2 (folder) helper
 # ------------------------------------------------------------------
 
 
 async def _handle_folder_share(
+    job: _DictJob,
+    event_id: str,
+    config: Config,
+    db_pool: Any,
+    event_repo: EventRepository,
+    verdict_repo: VerdictRepository,
+    file_hash_repo: FileHashRepository,
+    audit_repo: AuditLogRepository,
+    ai_provider: BaseAIProvider,
+    notifier_dispatcher: NotificationDispatcher,
+    second_look_provider: Optional[BaseAIProvider] = None,
+) -> None:
+    """Handle a folder share: enumerate children, process each file, send summary."""
+    sharing_type = getattr(job, "sharing_type", "") or getattr(job, "sharing_scope", "") or ""
+    sharing_perm = getattr(job, "sharing_permission", "") or ""
+
+    # ---- Step 1: Get folder metadata to obtain drive_id + item_id ----
+    graph_client = GraphClient(auth=_build_graph_auth(config))
+    try:
+        folder_meta = await retry_with_backoff(
+            graph_client.get_item_metadata,
+            getattr(job, "object_id", ""),
+        )
+    except (GraphFileNotFoundError, AccessDeniedError, GraphAPIError, httpx.HTTPStatusError) as exc:
+        logger.warning("[%s] Folder metadata fetch failed: %s", event_id, exc)
+        await audit_repo.log(event_id, "folder_metadata_failed", {"error": str(exc)}, status="error")
+        # Fall back to the old behaviour: flag for manual review
+        await _handle_folder_share_fallback(
+            job, event_id, config, event_repo, verdict_repo,
+            audit_repo, notifier_dispatcher, {},
+        )
+        return
+
+    drive_id = folder_meta.get("parentReference", {}).get("driveId", "")
+    folder_item_id = folder_meta.get("id", "")
+    folder_name = folder_meta.get("name", getattr(job, "file_name", ""))
+    folder_web_url = folder_meta.get("webUrl", "")
+
+    # ---- Step 2: Enumerate all files ----
+    try:
+        children = await graph_client.list_folder_children(drive_id, folder_item_id)
+    except Exception as exc:
+        logger.warning("[%s] Folder enumeration failed: %s", event_id, exc)
+        await audit_repo.log(event_id, "folder_enumeration_failed", {"error": str(exc)}, status="error")
+        await _handle_folder_share_fallback(
+            job, event_id, config, event_repo, verdict_repo,
+            audit_repo, notifier_dispatcher, {},
+        )
+        return
+
+    total_children = len(children)
+    await event_repo.update_folder_progress(event_id, total=total_children)
+    await audit_repo.log(event_id, "folder_enumerated", {
+        "total_files": total_children,
+        "folder_name": folder_name,
+    })
+    logger.info("[%s] Folder enumerated: %d files", event_id, total_children)
+
+    # ---- Step 3: If empty folder, send simple notification ----
+    if total_children == 0:
+        summary = (
+            f"Folder '{folder_name}' shared with {sharing_type} {sharing_perm} access. "
+            "Folder is empty — no files to analyse."
+        )
+        response = AnalysisResponse(
+            categories=[], context="institutional", summary=summary,
+            recommendation="Monitor folder for future file additions.",
+            raw_response="", provider="system", model="n/a",
+            input_tokens=0, output_tokens=0,
+            estimated_cost_usd=0.0, processing_time_seconds=0.0,
+        )
+        await verdict_repo.create_verdict(event_id, response, "folder_flag", config.notify_on_folder_share)
+        if config.notify_on_folder_share:
+            payload = AlertPayload(
+                event_id=event_id, alert_type="folder_share",
+                file_name=folder_name, file_path=folder_web_url,
+                file_size_human="N/A", item_type="Folder",
+                sharing_user=getattr(job, "user_id", "") or "",
+                sharing_type=sharing_type, sharing_permission=sharing_perm,
+                event_time=getattr(job, "event_time", "") or "",
+                summary=summary, recommendation=response.recommendation,
+            )
+            await notifier_dispatcher.dispatch(payload)
+        await event_repo.update_event_status(event_id, "completed")
+        await audit_repo.log(event_id, "pipeline_complete", {"outcome": "empty_folder"})
+        return
+
+    # ---- Step 4: Process each child file sequentially ----
+    child_results: list[Dict[str, Any]] = []
+    flagged_count = 0
+    failed_count = 0
+    clean_count = 0
+
+    for idx, child_item in enumerate(children):
+        child_event_id = f"{event_id}:child:{idx}"
+        child_name = child_item.get("name", "unknown")
+        logger.info("[%s] Processing child %d/%d: %s", event_id, idx + 1, total_children, child_name)
+
+        try:
+            # 4a: Create child event in DB
+            row_id = await event_repo.create_child_event(event_id, idx, child_item, job)
+            if row_id is None:
+                # Duplicate — already processed (idempotent rerun)
+                await event_repo.update_folder_progress(event_id, increment_processed=True)
+                child_results.append({
+                    "event_id": child_event_id,
+                    "file_name": child_name,
+                    "file_path": (child_item.get("parentReference") or {}).get("path", ""),
+                    "status": "skipped_duplicate",
+                    "escalation_tier": None,
+                    "categories": [],
+                    "summary": "Already processed (duplicate)",
+                    "failure_reason": None,
+                })
+                clean_count += 1
+                continue
+
+            # 4b: Build prefetched metadata from driveItem
+            parent_ref = child_item.get("parentReference", {})
+            prefetched = {
+                "name": child_name,
+                "size": child_item.get("size", 0),
+                "drive_id": parent_ref.get("driveId", ""),
+                "item_id": child_item.get("id", ""),
+                "mime_type": (child_item.get("file") or {}).get("mimeType", ""),
+                "parent_path": parent_ref.get("path", ""),
+                "web_url": child_item.get("webUrl", ""),
+            }
+
+            # 4c: Build synthetic job for the child
+            child_job_data = {
+                "event_id": child_event_id,
+                "operation": getattr(job, "operation", ""),
+                "workload": getattr(job, "workload", None),
+                "user_id": getattr(job, "user_id", ""),
+                "object_id": child_item.get("webUrl", "") or getattr(job, "object_id", ""),
+                "site_url": getattr(job, "site_url", None),
+                "file_name": child_name,
+                "relative_path": parent_ref.get("path", ""),
+                "item_type": "File",
+                "sharing_type": getattr(job, "sharing_type", None),
+                "sharing_scope": getattr(job, "sharing_scope", None),
+                "sharing_permission": getattr(job, "sharing_permission", None),
+                "event_time": getattr(job, "event_time", None),
+            }
+            child_job = _DictJob(child_job_data)
+
+            # 4d: Process the file
+            resp = await _process_single_file(
+                child_event_id, child_job, config,
+                event_repo, verdict_repo, file_hash_repo, audit_repo,
+                ai_provider, notifier_dispatcher, second_look_provider,
+                skip_notification=True,
+                prefetched_metadata=prefetched,
+            )
+
+            # 4e: Update counters
+            await event_repo.update_folder_progress(event_id, increment_processed=True)
+
+            # 4f: Classify result
+            is_flagged = False
+            tier = None
+            cats: list[str] = []
+            child_summary = ""
+            if resp is not None:
+                tier = resp.escalation_tier
+                cats = [c.id for c in resp.categories]
+                child_summary = resp.summary or ""
+                if tier in ("tier_1", "tier_2"):
+                    is_flagged = True
+                    flagged_count += 1
+                    await event_repo.update_folder_progress(event_id, increment_flagged=True)
+                else:
+                    clean_count += 1
+            else:
+                failed_count += 1
+
+            child_results.append({
+                "event_id": child_event_id,
+                "file_name": child_name,
+                "file_path": parent_ref.get("path", ""),
+                "escalation_tier": tier,
+                "categories": cats,
+                "summary": child_summary,
+                "status": "completed" if resp is not None else "failed",
+                "failure_reason": None if resp is not None else "processing_error",
+            })
+
+        except Exception:
+            logger.exception("[%s] Error processing child %s", event_id, child_name)
+            failed_count += 1
+            await event_repo.update_folder_progress(event_id, increment_processed=True)
+            child_results.append({
+                "event_id": child_event_id,
+                "file_name": child_name,
+                "file_path": (child_item.get("parentReference") or {}).get("path", ""),
+                "escalation_tier": None,
+                "categories": [],
+                "summary": "",
+                "status": "failed",
+                "failure_reason": "unhandled_exception",
+            })
+            try:
+                await event_repo.update_event_status(child_event_id, "failed", failure_reason="unhandled_exception")
+            except Exception:
+                pass
+
+    # ---- Step 5: Build and send summary notification ----
+    summary_text = (
+        f"Folder '{folder_name}' shared with {sharing_type} {sharing_perm} access. "
+        f"Enumerated {total_children} files: "
+        f"{flagged_count} flagged, {clean_count} clean, {failed_count} failed."
+    )
+
+    # Create a synthetic parent verdict
+    response = AnalysisResponse(
+        categories=[], context="institutional", summary=summary_text,
+        recommendation="Review flagged files in the folder." if flagged_count else "No sensitive files detected.",
+        raw_response="", provider="system", model="folder_enumeration",
+        input_tokens=0, output_tokens=0,
+        estimated_cost_usd=0.0, processing_time_seconds=0.0,
+    )
+    notification_required = flagged_count > 0 or config.notify_on_folder_share
+    await verdict_repo.create_verdict(event_id, response, "folder_enumeration", notification_required)
+    await audit_repo.log(event_id, "verdict_recorded", {"type": "folder_enumerated", "flagged": flagged_count})
+
+    if notification_required:
+        payload = AlertPayload(
+            event_id=event_id,
+            alert_type="folder_share_enumerated",
+            file_name=folder_name,
+            file_path=folder_web_url,
+            file_size_human="N/A",
+            item_type="Folder",
+            sharing_user=getattr(job, "user_id", "") or "",
+            sharing_type=sharing_type,
+            sharing_permission=sharing_perm,
+            event_time=getattr(job, "event_time", "") or "",
+            summary=summary_text,
+            recommendation=response.recommendation,
+            child_summaries=child_results,
+            folder_total_files=total_children,
+            folder_flagged_files=flagged_count,
+            folder_clean_files=clean_count,
+            folder_failed_files=failed_count,
+        )
+        results = await notifier_dispatcher.dispatch(payload)
+        await audit_repo.log(event_id, "notification_sent", {"channels": results})
+        logger.info("[%s] Folder summary notification sent: %s", event_id, results)
+
+    await event_repo.update_event_status(event_id, "completed")
+    await audit_repo.log(event_id, "pipeline_complete", {
+        "outcome": "folder_enumerated",
+        "total": total_children,
+        "flagged": flagged_count,
+        "clean": clean_count,
+        "failed": failed_count,
+    })
+    logger.info(
+        "[%s] Folder processing complete: %d total, %d flagged, %d clean, %d failed",
+        event_id, total_children, flagged_count, clean_count, failed_count,
+    )
+
+
+async def _handle_folder_share_fallback(
     job: _DictJob,
     event_id: str,
     config: Config,
@@ -419,60 +754,43 @@ async def _handle_folder_share(
     notifier_dispatcher: NotificationDispatcher,
     metadata: Dict[str, Any],
 ) -> None:
-    """Handle a folder share: create verdict, notify, complete."""
+    """Original folder-share handler used as fallback when enumeration fails."""
     sharing_type = getattr(job, "sharing_type", "") or getattr(job, "sharing_scope", "") or ""
     sharing_perm = getattr(job, "sharing_permission", "") or ""
     summary = (
         f"Folder shared with {sharing_type} {sharing_perm} access. "
-        "Automatic flag for analyst review."
+        "Automatic flag for analyst review (enumeration unavailable)."
     )
 
-    # Synthetic response for folder shares
     response = AnalysisResponse(
-        categories=[],
-        context="institutional",
-        summary=summary,
+        categories=[], context="institutional", summary=summary,
         recommendation="Review folder contents and sharing permissions.",
-        raw_response="",
-        provider="system",
-        model="n/a",
-        input_tokens=0,
-        output_tokens=0,
-        estimated_cost_usd=0.0,
-        processing_time_seconds=0.0,
+        raw_response="", provider="system", model="n/a",
+        input_tokens=0, output_tokens=0,
+        estimated_cost_usd=0.0, processing_time_seconds=0.0,
     )
-
-    await verdict_repo.create_verdict(
-        event_id=event_id,
-        response=response,
-        analysis_mode="folder_flag",
-        notification_required=config.notify_on_folder_share,
-    )
+    await verdict_repo.create_verdict(event_id, response, "folder_flag", config.notify_on_folder_share)
     await audit_repo.log(event_id, "verdict_recorded", {"type": "folder_share_flagged"})
 
     if config.notify_on_folder_share:
         payload = AlertPayload(
-            event_id=event_id,
-            alert_type="folder_share",
+            event_id=event_id, alert_type="folder_share",
             file_name=getattr(job, "file_name", "") or "",
             file_path=metadata.get("parent_path", ""),
-            file_size_human="N/A",
-            item_type="Folder",
+            file_size_human="N/A", item_type="Folder",
             sharing_user=getattr(job, "user_id", "") or "",
-            sharing_type=sharing_type,
-            sharing_permission=sharing_perm,
+            sharing_type=sharing_type, sharing_permission=sharing_perm,
             event_time=getattr(job, "event_time", "") or "",
             sharing_link_url=metadata.get("sharing_link_url"),
             sharing_links=metadata.get("sharing_links"),
-            summary=summary,
-            recommendation="Review folder contents and sharing permissions.",
+            summary=summary, recommendation=response.recommendation,
         )
-        results = await notifier_dispatcher.dispatch(payload)
-        await audit_repo.log(event_id, "notification_sent", {"channels": results})
+        await notifier_dispatcher.dispatch(payload)
+        await audit_repo.log(event_id, "notification_sent", {"type": "folder_share_fallback"})
 
     await event_repo.update_event_status(event_id, "completed")
-    await audit_repo.log(event_id, "pipeline_complete", {"outcome": "folder_flagged"})
-    logger.info("[%s] Folder share flagged and notified", event_id)
+    await audit_repo.log(event_id, "pipeline_complete", {"outcome": "folder_flagged_fallback"})
+    logger.info("[%s] Folder share flagged (fallback) and notified", event_id)
 
 
 # ------------------------------------------------------------------
@@ -664,7 +982,9 @@ async def _run_ai_analysis(
     """Call the AI provider with retries and audit logging."""
     await audit_repo.log(event_id, "ai_analysis_start", {"mode": request.mode})
 
-    response = await retry_with_backoff(ai_provider.analyze, request)
+    response = await retry_with_backoff(
+        ai_provider.analyze, request, call_timeout=120,
+    )
 
     cat_ids = [c.id for c in response.categories]
     await audit_repo.log(event_id, "ai_analysis_complete", {
@@ -704,6 +1024,7 @@ async def _record_and_notify(
     job: _DictJob,
     metadata: Dict[str, Any],
     file_hash: Optional[str],
+    skip_notification: bool = False,
 ) -> None:
     """Record the AI verdict, store file hash, notify if risky, and complete."""
 
@@ -786,7 +1107,7 @@ async def _record_and_notify(
         )
 
     # Step 11: Notify if risky
-    if notification_required:
+    if notification_required and not skip_notification:
         payload = AlertPayload(
             event_id=event_id,
             alert_type="high_sensitivity_file",

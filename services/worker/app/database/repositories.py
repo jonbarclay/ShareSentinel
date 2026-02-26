@@ -150,6 +150,131 @@ class EventRepository:
             row = await conn.fetchrow("SELECT * FROM events WHERE event_id = $1", event_id)
             return dict(row) if row else None
 
+    async def create_child_event(
+        self,
+        parent_event_id: str,
+        child_index: int,
+        child_item: Dict[str, Any],
+        parent_job: Any,
+    ) -> Optional[int]:
+        """Insert a child file event linked to a parent folder event.
+
+        ``child_item`` is the Graph driveItem dict from enumeration.
+        ``parent_job`` supplies inherited sharing metadata.
+
+        Returns row id, or None if duplicate.
+        """
+        child_event_id = f"{parent_event_id}:child:{child_index}"
+        parent_ref = child_item.get("parentReference", {})
+        file_name = child_item.get("name", "")
+        file_size = child_item.get("size", 0)
+        mime_type = (child_item.get("file") or {}).get("mimeType", "")
+        drive_id = parent_ref.get("driveId", "")
+        item_id = child_item.get("id", "")
+        web_url = child_item.get("webUrl", "")
+        # Build a relative path from parentReference
+        parent_path = parent_ref.get("path", "")
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO events (
+                    event_id, parent_event_id, child_index,
+                    operation, workload, user_id, object_id,
+                    site_url, file_name, relative_path, item_type,
+                    sharing_type, sharing_scope, sharing_permission,
+                    event_time, status, processing_started_at,
+                    confirmed_file_name, file_size_bytes, mime_type,
+                    drive_id, item_id_graph, web_url
+                ) VALUES (
+                    $1, $2, $3,
+                    $4, $5, $6, $7,
+                    $8, $9, $10, $11,
+                    $12, $13, $14,
+                    $15, $16, $17,
+                    $18, $19, $20,
+                    $21, $22, $23
+                )
+                ON CONFLICT (event_id) DO NOTHING
+                RETURNING id
+                """,
+                child_event_id,
+                parent_event_id,
+                child_index,
+                getattr(parent_job, "operation", ""),
+                getattr(parent_job, "workload", None),
+                getattr(parent_job, "user_id", ""),
+                web_url or getattr(parent_job, "object_id", ""),
+                getattr(parent_job, "site_url", None),
+                file_name,
+                parent_path,
+                "File",
+                getattr(parent_job, "sharing_type", None),
+                getattr(parent_job, "sharing_scope", None),
+                getattr(parent_job, "sharing_permission", None),
+                _parse_event_time(getattr(parent_job, "event_time", None)),
+                "processing",
+                datetime.now(timezone.utc),
+                file_name,
+                file_size,
+                mime_type,
+                drive_id,
+                item_id,
+                web_url,
+            )
+            if row is None:
+                logger.info("Duplicate child event %s, skipping", child_event_id)
+                return None
+            logger.info(
+                "Created child event id=%s event_id=%s parent=%s",
+                row["id"], child_event_id, parent_event_id,
+            )
+            return row["id"]
+
+    async def update_folder_progress(
+        self,
+        parent_event_id: str,
+        total: Optional[int] = None,
+        increment_processed: bool = False,
+        increment_flagged: bool = False,
+    ) -> None:
+        """Update folder enumeration counters on the parent event row."""
+        sets: list[str] = ["updated_at = NOW()"]
+        params: list[Any] = []
+        idx = 1
+
+        if total is not None:
+            sets.append(f"folder_total_children = ${idx}")
+            params.append(total)
+            idx += 1
+        if increment_processed:
+            sets.append("folder_processed_children = COALESCE(folder_processed_children, 0) + 1")
+        if increment_flagged:
+            sets.append("folder_flagged_children = COALESCE(folder_flagged_children, 0) + 1")
+
+        params.append(parent_event_id)
+        query = f"UPDATE events SET {', '.join(sets)} WHERE event_id = ${idx}"
+        async with self._pool.acquire() as conn:
+            await conn.execute(query, *params)
+
+    async def get_child_events(self, parent_event_id: str) -> List[Dict[str, Any]]:
+        """Return child events with their verdict data for summary building."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT e.event_id, e.file_name, e.relative_path, e.status,
+                       e.failure_reason, e.child_index, e.file_size_bytes,
+                       v.escalation_tier, v.category_assessments,
+                       v.summary AS verdict_summary, v.analysis_mode
+                FROM events e
+                LEFT JOIN verdicts v ON e.event_id = v.event_id
+                WHERE e.parent_event_id = $1
+                ORDER BY e.child_index
+                """,
+                parent_event_id,
+            )
+            return [dict(r) for r in rows]
+
     async def get_events_by_status(self, status: str, limit: int = 50) -> List[Dict[str, Any]]:
         """Return events matching *status* ordered by received_at."""
         async with self._pool.acquire() as conn:
@@ -187,6 +312,18 @@ class VerdictRepository:
 
         pii_types_json = json.dumps(response.pii_types_found) if response.pii_types_found else "[]"
 
+        # Second-look fields
+        sl = response.second_look or {}
+        sl_performed = sl.get("performed", False)
+        sl_provider = sl.get("provider") if sl_performed else None
+        sl_model = sl.get("model") if sl_performed else None
+        sl_agreed = sl.get("agreed") if sl_performed else None
+        sl_categories = json.dumps(sl.get("categories", [])) if sl_performed else "[]"
+        sl_tier = sl.get("tier") if sl_performed else None
+        sl_summary = sl.get("summary") if sl_performed else None
+        sl_reasoning = sl.get("reasoning") if sl_performed else None
+        sl_cost = sl.get("cost_usd", 0) if sl_performed else 0
+
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -197,7 +334,13 @@ class VerdictRepository:
                     analysis_mode, ai_provider, ai_model,
                     input_tokens, output_tokens, estimated_cost_usd,
                     processing_time_seconds, notification_required,
-                    affected_count, pii_types_found
+                    affected_count, pii_types_found,
+                    second_look_performed, second_look_provider,
+                    second_look_model, second_look_agreed,
+                    second_look_categories, second_look_tier,
+                    second_look_summary, second_look_reasoning,
+                    second_look_cost_usd,
+                    reasoning, data_recency, risk_score
                 ) VALUES (
                     $1, $2::jsonb,
                     $3::jsonb, $4, $5,
@@ -205,7 +348,12 @@ class VerdictRepository:
                     $8, $9, $10,
                     $11, $12, $13,
                     $14, $15,
-                    $16, $17::jsonb
+                    $16, $17::jsonb,
+                    $18, $19,
+                    $20, $21,
+                    $22::jsonb, $23,
+                    $24, $25, $26,
+                    $27, $28, $29
                 )
                 RETURNING id
                 """,
@@ -226,10 +374,22 @@ class VerdictRepository:
                 notification_required,
                 response.affected_count,
                 pii_types_json,
+                sl_performed,
+                sl_provider,
+                sl_model,
+                sl_agreed,
+                sl_categories,
+                sl_tier,
+                sl_summary,
+                sl_reasoning,
+                sl_cost,
+                response.reasoning or None,
+                response.data_recency or None,
+                response.risk_score,
             )
             logger.info(
-                "Created verdict id=%s event_id=%s tier=%s categories=%s",
-                row["id"], event_id, response.escalation_tier, category_ids,
+                "Created verdict id=%s event_id=%s tier=%s categories=%s second_look=%s",
+                row["id"], event_id, response.escalation_tier, category_ids, sl_performed,
             )
             return row["id"]
 

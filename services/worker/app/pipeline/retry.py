@@ -23,6 +23,7 @@ async def retry_with_backoff(
     max_retries: int = 3,
     base_delay: float = 2.0,
     retryable_exceptions: Optional[Sequence[Type[BaseException]]] = None,
+    call_timeout: Optional[float] = None,
     **kwargs: Any,
 ) -> T:
     """Execute *func* with exponential-backoff retries on transient failures.
@@ -36,6 +37,8 @@ async def retry_with_backoff(
         base_delay: Base delay in seconds before the first retry.
         retryable_exceptions: Exception types that trigger a retry.
             Defaults to ConnectionError, TimeoutError, httpx.TimeoutException.
+        call_timeout: Per-attempt timeout in seconds. If the call exceeds
+            this duration, ``TimeoutError`` is raised (retryable by default).
         **kwargs: Keyword arguments forwarded to *func*.
 
     Returns:
@@ -49,7 +52,11 @@ async def retry_with_backoff(
     last_exc: BaseException | None = None
     for attempt in range(max_retries):
         try:
-            return await func(*args, **kwargs)
+            if call_timeout is not None:
+                async with asyncio.timeout(call_timeout):
+                    return await func(*args, **kwargs)
+            else:
+                return await func(*args, **kwargs)
         except catchable as exc:
             last_exc = exc
             if attempt == max_retries - 1:

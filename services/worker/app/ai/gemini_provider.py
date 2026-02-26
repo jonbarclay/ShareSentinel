@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 import httpx
 
 from .base_provider import AnalysisRequest, AnalysisResponse, BaseAIProvider
-from .prompt_manager import SYSTEM_PROMPT, PromptManager
+from .prompt_manager import PromptManager
 from .response_parser import parse_ai_response
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,12 @@ class GeminiProvider(BaseAIProvider):
         "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
         "gemini-2.5-pro-preview-05-06": {"input": 1.25, "output": 10.00},
         "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
+        "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
+        "gemini-3.1-pro-preview": {"input": 1.25, "output": 10.00},
     }
+
+    # Models that require the global endpoint instead of a regional one
+    GLOBAL_MODELS: set[str] = {"gemini-3.1-pro-preview"}
 
     def __init__(
         self,
@@ -34,10 +39,16 @@ class GeminiProvider(BaseAIProvider):
         project: str = "",
         location: str = "us-central1",
     ) -> None:
-        self._base_url = (
-            f"https://{location}-aiplatform.googleapis.com/v1/"
-            f"projects/{project}/locations/{location}/publishers/google/models"
-        )
+        if model in self.GLOBAL_MODELS:
+            self._base_url = (
+                f"https://aiplatform.googleapis.com/v1/"
+                f"projects/{project}/locations/global/publishers/google/models"
+            )
+        else:
+            self._base_url = (
+                f"https://{location}-aiplatform.googleapis.com/v1/"
+                f"projects/{project}/locations/{location}/publishers/google/models"
+            )
         self._api_key = api_key
         self.model_name = model
         self.max_tokens = max_tokens
@@ -52,7 +63,7 @@ class GeminiProvider(BaseAIProvider):
 
             body: Dict[str, Any] = {
                 "contents": contents,
-                "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                "systemInstruction": {"parts": [{"text": self.prompt_manager.system_prompt}]},
                 "generationConfig": {
                     "temperature": self.temperature,
                     "maxOutputTokens": self.max_tokens,
@@ -97,6 +108,9 @@ class GeminiProvider(BaseAIProvider):
                 processing_time_seconds=processing_time,
                 affected_count=parsed.get("affected_count", 0),
                 pii_types_found=parsed.get("pii_types_found", []),
+                reasoning=parsed.get("reasoning", ""),
+                data_recency=parsed.get("data_recency", "unknown"),
+                risk_score=parsed.get("risk_score", 0),
             )
         except Exception as exc:
             logger.exception("Gemini analysis failed")

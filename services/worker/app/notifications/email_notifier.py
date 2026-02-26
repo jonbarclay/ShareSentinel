@@ -106,6 +106,14 @@ class EmailNotifier(BaseNotifier):
                 f"[ShareSentinel] Folder Shared with {payload.sharing_type} "
                 f"Access - {payload.file_name}"
             )
+        elif payload.alert_type == "folder_share_enumerated":
+            flagged = payload.folder_flagged_files
+            total = payload.folder_total_files
+            label = f"{flagged} flagged" if flagged else "No sensitive files"
+            return (
+                f"[ShareSentinel] Folder Scan: {label} "
+                f"({total} files) - {payload.file_name}"
+            )
         elif payload.alert_type == "remediation_report":
             tier_label = payload.escalation_tier or "unknown"
             return (
@@ -199,11 +207,31 @@ class EmailNotifier(BaseNotifier):
                 "  Review the file and sharing settings. Consider contacting the "
                 "user to restrict sharing or remove the link."
             )
-        elif payload.alert_type == "folder_share":
+        elif payload.alert_type in ("folder_share", "folder_share_enumerated"):
             lines.append(
                 "  A folder with broad sharing may expose future files. Review "
                 "the folder contents and sharing settings immediately."
             )
+
+        # Folder enumeration child results
+        if payload.alert_type == "folder_share_enumerated" and payload.child_summaries:
+            lines.append("")
+            lines.append("FOLDER SCAN RESULTS")
+            lines.append(f"  Total files: {payload.folder_total_files}")
+            lines.append(f"  Flagged: {payload.folder_flagged_files}")
+            lines.append(f"  Clean: {payload.folder_clean_files}")
+            lines.append(f"  Failed: {payload.folder_failed_files}")
+            flagged = [c for c in payload.child_summaries if c.get("escalation_tier") in ("tier_1", "tier_2")]
+            if flagged:
+                lines.append("")
+                lines.append("  FLAGGED FILES:")
+                for child in flagged:
+                    lines.append(f"    - {child.get('file_name', '?')} [{child.get('escalation_tier', '?')}]")
+                    cats = child.get("categories", [])
+                    if cats:
+                        lines.append(f"      Categories: {', '.join(cats)}")
+                    if child.get("summary"):
+                        lines.append(f"      {child['summary']}")
         elif payload.alert_type == "processing_failure":
             lines.append(
                 "  This sharing event could not be evaluated automatically. "

@@ -31,6 +31,11 @@
   <h1 style="margin:0;font-size:20px;font-weight:600;">Folder Shared with Broad Access</h1>
   <p style="margin:6px 0 0;font-size:14px;">{{ sharing_type }} {{ sharing_permission }} access detected</p>
 </td></tr>
+{% elif alert_type == "folder_share_enumerated" %}
+<tr><td style="background-color:{% if folder_flagged_files > 0 %}#de350b{% else %}#00875a{% endif %};padding:20px 24px;color:#ffffff;">
+  <h1 style="margin:0;font-size:20px;font-weight:600;">Folder Scan Complete{% if folder_flagged_files > 0 %} — {{ folder_flagged_files }} Flagged{% endif %}</h1>
+  <p style="margin:6px 0 0;font-size:14px;opacity:0.9;">{{ folder_total_files }} files scanned · {{ sharing_type }} {{ sharing_permission }} access</p>
+</td></tr>
 {% elif alert_type == "processing_failure" %}
 <tr><td style="background-color:#6b778c;padding:20px 24px;color:#ffffff;">
   <h1 style="margin:0;font-size:20px;font-weight:600;">Processing Failure</h1>
@@ -137,6 +142,20 @@
       {% endfor %}
     </td>
   </tr>
+  {% if risk_score and risk_score > 0 %}
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;width:120px;vertical-align:top;">Risk Score</td>
+    <td style="padding:4px 0;color:#172b4d;">
+      <span style="display:inline-block;background-color:{% if risk_score >= 7 %}#de350b{% elif risk_score >= 4 %}#ff991f{% else %}#dfe1e6{% endif %};color:{% if risk_score >= 7 %}#ffffff{% elif risk_score >= 4 %}#172b4d{% else %}#6b778c{% endif %};padding:2px 10px;border-radius:12px;font-weight:600;font-size:13px;">{{ risk_score }} / 10</span>
+    </td>
+  </tr>
+  {% endif %}
+  {% if data_recency and data_recency != "unknown" %}
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Data Recency</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ data_recency }}</td>
+  </tr>
+  {% endif %}
   {% if summary %}
   <tr>
     <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Summary</td>
@@ -157,10 +176,79 @@
   {% endif %}
 </table>
 
+{% if reasoning %}
+<div style="background-color:#f4f5f7;border-left:4px solid #0052cc;padding:10px 14px;margin-bottom:20px;border-radius:0 4px 4px 0;">
+  <div style="font-weight:600;color:#6b778c;font-size:12px;text-transform:uppercase;margin-bottom:4px;">AI Reasoning</div>
+  <div style="font-size:13px;color:#172b4d;white-space:pre-wrap;">{{ reasoning }}</div>
+</div>
+{% endif %}
+
 {% if was_sampled and sampling_description %}
 <div style="background-color:#fffae6;border-left:4px solid #ff991f;padding:10px 14px;margin-bottom:20px;border-radius:0 4px 4px 0;font-size:13px;">
   <strong>Note:</strong> {{ sampling_description }}
 </div>
+{% endif %}
+{% endif %}
+
+<!-- ============================================================ -->
+<!-- Folder Scan Results (only for folder_share_enumerated)        -->
+<!-- ============================================================ -->
+{% if alert_type == "folder_share_enumerated" %}
+<h2 style="margin:0 0 12px;font-size:16px;font-weight:600;color:#172b4d;border-bottom:1px solid #dfe1e6;padding-bottom:8px;">Folder Scan Results</h2>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px;">
+  <tr>
+    <td style="text-align:center;padding:10px;">
+      <div style="font-size:28px;font-weight:700;color:#172b4d;">{{ folder_total_files }}</div>
+      <div style="font-size:11px;color:#6b778c;text-transform:uppercase;">Total Files</div>
+    </td>
+    <td style="text-align:center;padding:10px;">
+      <div style="font-size:28px;font-weight:700;color:{% if folder_flagged_files > 0 %}#de350b{% else %}#6b778c{% endif %};">{{ folder_flagged_files }}</div>
+      <div style="font-size:11px;color:#6b778c;text-transform:uppercase;">Flagged</div>
+    </td>
+    <td style="text-align:center;padding:10px;">
+      <div style="font-size:28px;font-weight:700;color:#00875a;">{{ folder_clean_files }}</div>
+      <div style="font-size:11px;color:#6b778c;text-transform:uppercase;">Clean</div>
+    </td>
+    <td style="text-align:center;padding:10px;">
+      <div style="font-size:28px;font-weight:700;color:{% if folder_failed_files > 0 %}#ff991f{% else %}#6b778c{% endif %};">{{ folder_failed_files }}</div>
+      <div style="font-size:11px;color:#6b778c;text-transform:uppercase;">Failed</div>
+    </td>
+  </tr>
+</table>
+
+{% if child_summaries %}
+{% set flagged_children = child_summaries | selectattr("escalation_tier", "in", ["tier_1", "tier_2"]) | list %}
+{% if flagged_children %}
+<h3 style="margin:0 0 8px;font-size:14px;font-weight:600;color:#de350b;">Flagged Files</h3>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px;border:1px solid #dfe1e6;border-radius:4px;">
+  <tr style="background-color:#f4f5f7;">
+    <th style="text-align:left;padding:8px 10px;font-size:11px;color:#6b778c;font-weight:600;text-transform:uppercase;border-bottom:1px solid #dfe1e6;">File</th>
+    <th style="text-align:left;padding:8px 10px;font-size:11px;color:#6b778c;font-weight:600;text-transform:uppercase;border-bottom:1px solid #dfe1e6;">Tier</th>
+    <th style="text-align:left;padding:8px 10px;font-size:11px;color:#6b778c;font-weight:600;text-transform:uppercase;border-bottom:1px solid #dfe1e6;">Categories</th>
+    <th style="text-align:left;padding:8px 10px;font-size:11px;color:#6b778c;font-weight:600;text-transform:uppercase;border-bottom:1px solid #dfe1e6;">Summary</th>
+  </tr>
+  {% for child in flagged_children %}
+  <tr>
+    <td style="padding:8px 10px;font-size:13px;color:#172b4d;border-bottom:1px solid #dfe1e6;word-break:break-all;">{{ child.file_name }}</td>
+    <td style="padding:8px 10px;border-bottom:1px solid #dfe1e6;">
+      <span style="display:inline-block;background-color:{% if child.escalation_tier == 'tier_1' %}#de350b{% else %}#ff991f{% endif %};color:#ffffff;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;">{{ child.escalation_tier }}</span>
+    </td>
+    <td style="padding:8px 10px;font-size:12px;color:#6b778c;border-bottom:1px solid #dfe1e6;">{{ child.categories | join(', ') }}</td>
+    <td style="padding:8px 10px;font-size:12px;color:#6b778c;border-bottom:1px solid #dfe1e6;">{{ child.summary[:120] }}{% if child.summary|length > 120 %}…{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% set failed_children = child_summaries | selectattr("status", "equalto", "failed") | list %}
+{% if failed_children %}
+<h3 style="margin:0 0 8px;font-size:14px;font-weight:600;color:#ff991f;">Failed Files ({{ failed_children | length }})</h3>
+<div style="background-color:#fffae6;border-left:4px solid #ff991f;padding:10px 14px;margin-bottom:16px;border-radius:0 4px 4px 0;font-size:13px;">
+  {% for child in failed_children %}
+  <div style="margin-bottom:4px;">{{ child.file_name }}{% if child.failure_reason %} — {{ child.failure_reason }}{% endif %}</div>
+  {% endfor %}
+</div>
+{% endif %}
 {% endif %}
 {% endif %}
 
@@ -202,6 +290,21 @@
     <li>Contact <strong>{{ sharing_user }}</strong> about the sharing scope</li>
     <li>Consider restricting access to specific people</li>
   </ul>
+{% elif alert_type == "folder_share_enumerated" %}
+  {% if folder_flagged_files > 0 %}
+  <p style="margin:0 0 8px;">{{ folder_flagged_files }} file(s) in this folder were flagged as potentially sensitive. Please:</p>
+  <ul style="margin:0;padding-left:20px;">
+    <li>Review each flagged file above</li>
+    <li>Contact <strong>{{ sharing_user }}</strong> about the sharing scope</li>
+    <li>Consider restricting folder access or removing the sharing link</li>
+  </ul>
+  {% else %}
+  <p style="margin:0 0 8px;">No sensitive files were detected in this folder. However, a broadly shared folder may receive sensitive files in the future. Consider:</p>
+  <ul style="margin:0;padding-left:20px;">
+    <li>Confirming the sharing scope is appropriate with <strong>{{ sharing_user }}</strong></li>
+    <li>Monitoring the folder for future additions</li>
+  </ul>
+  {% endif %}
 {% elif alert_type == "processing_failure" %}
   <p style="margin:0 0 8px;">Automated analysis could not be completed. Please:</p>
   <ul style="margin:0;padding-left:20px;">
