@@ -47,6 +47,9 @@ htmlcov/
 # Test data
 test_data.csv
 
+# Database backups
+backups/
+
 # Temporary files
 /tmp/
 *.tmp
