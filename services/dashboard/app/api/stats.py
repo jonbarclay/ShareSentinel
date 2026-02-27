@@ -21,20 +21,23 @@ async def get_stats(request: Request):
                 COUNT(*) FILTER (WHERE status = 'processing') AS processing,
                 COUNT(*) FILTER (WHERE status = 'failed') AS failed
             FROM events
+            WHERE parent_event_id IS NULL
         """)
         verdict_stats = await conn.fetchrow("""
             SELECT
                 COUNT(*) AS total_verdicts,
-                COUNT(*) FILTER (WHERE escalation_tier IN ('tier_1', 'tier_2')) AS escalated,
-                COUNT(*) FILTER (WHERE escalation_tier = 'tier_1') AS tier_1_count,
-                COUNT(*) FILTER (WHERE escalation_tier = 'tier_2') AS tier_2_count,
-                COUNT(*) FILTER (WHERE analyst_reviewed) AS reviewed,
-                COUNT(*) FILTER (WHERE escalation_tier IN ('tier_1', 'tier_2')
-                    AND NOT COALESCE(analyst_reviewed, FALSE)) AS unreviewed_escalated,
-                COUNT(*) FILTER (WHERE escalation_tier = 'tier_1'
-                    AND NOT COALESCE(analyst_reviewed, FALSE)) AS unreviewed_tier_1,
-                SUM(estimated_cost_usd)::FLOAT AS total_cost
-            FROM verdicts
+                COUNT(*) FILTER (WHERE v.escalation_tier IN ('tier_1', 'tier_2')) AS escalated,
+                COUNT(*) FILTER (WHERE v.escalation_tier = 'tier_1') AS tier_1_count,
+                COUNT(*) FILTER (WHERE v.escalation_tier = 'tier_2') AS tier_2_count,
+                COUNT(*) FILTER (WHERE v.analyst_reviewed) AS reviewed,
+                COUNT(*) FILTER (WHERE v.escalation_tier IN ('tier_1', 'tier_2')
+                    AND NOT COALESCE(v.analyst_reviewed, FALSE)) AS unreviewed_escalated,
+                COUNT(*) FILTER (WHERE v.escalation_tier = 'tier_1'
+                    AND NOT COALESCE(v.analyst_reviewed, FALSE)) AS unreviewed_tier_1,
+                SUM(v.estimated_cost_usd)::FLOAT AS total_cost
+            FROM verdicts v
+            JOIN events e ON v.event_id = e.event_id
+            WHERE e.parent_event_id IS NULL
         """)
         by_provider = await conn.fetch("""
             SELECT
@@ -76,6 +79,7 @@ async def get_stats(request: Request):
             LEFT JOIN user_profiles up ON up.user_id = e.user_id
             WHERE v.escalation_tier IN ('tier_1', 'tier_2')
               AND e.user_id != 'unknown@unknown.com'
+              AND e.parent_event_id IS NULL
             GROUP BY e.user_id, up.display_name, up.department
             ORDER BY escalated_count DESC
         """)
@@ -91,6 +95,7 @@ async def get_stats(request: Request):
             WHERE v.escalation_tier IN ('tier_1', 'tier_2')
               AND e.site_url IS NOT NULL
               AND e.site_url LIKE '%/sites/%'
+              AND e.parent_event_id IS NULL
             GROUP BY e.site_url
             ORDER BY escalated_count DESC
         """)
@@ -102,6 +107,7 @@ async def get_stats(request: Request):
             JOIN events e ON v.event_id = e.event_id
             WHERE v.escalation_tier IN ('tier_1', 'tier_2')
               AND NOT COALESCE(v.analyst_reviewed, FALSE)
+              AND e.parent_event_id IS NULL
             ORDER BY
               CASE v.escalation_tier WHEN 'tier_1' THEN 0 ELSE 1 END,
               v.created_at DESC
