@@ -85,7 +85,7 @@ Job from Redis Queue
                                                        │
                                                        ▼
                                               ┌─────────────────────┐
-                                              │ 11. Notify if Risky  │  If rating ≥ 4,
+                                              │ 11. Notify if Risky  │  If Tier 1/2 category,
                                               │                      │  alert analyst
                                               └────────┬─────────────┘
                                                        │
@@ -103,6 +103,8 @@ Job from Redis Queue
 When a job is pulled from the Redis queue, immediately create a record in the `events` database table with status `processing`. This ensures every event is tracked even if the pipeline crashes midway.
 
 **Fields to record**: event_id, operation, user_id, object_id, file_name, item_type, sharing_type, sharing_permission, event_time, received_at, processing_started_at, status ("processing"), raw_payload.
+
+**Note**: Events now arrive from the audit log poller (in the lifecycle-cron container) rather than a webhook listener. The queue job format is identical regardless of the event source.
 
 ### Step 2: Classify Item (File vs. Folder)
 
@@ -286,7 +288,7 @@ Check the `file_hashes` database table for this hash. If found:
 - The same file content was previously analyzed.
 - If the previous verdict was recorded within the last 30 days, reuse it. Update the current event record with the previous verdict, a note that it was a "hash_match_reuse", and the original event_id that produced the verdict.
 - Skip AI analysis. Proceed to Step 10 (record verdict) with the reused verdict.
-- Still trigger notification if the reused verdict was ≥ 4 (the file is being shared again and is still risky).
+- Still trigger notification if the reused verdict had Tier 1/2 categories (the file is being shared again and is still risky).
 
 If not found, this is new content. Store the hash in the `file_hashes` table linked to this event_id.
 
@@ -338,17 +340,23 @@ Send the extracted content to the configured AI provider. See **doc 06 (AI Provi
 2. **Multimodal analysis**: Send images along with a text prompt. Used for actual images and scanned documents.
 3. **Filename/path-only analysis**: Send only the filename, path, file size, and sharing metadata. Used for excluded types, oversized files, and files where all extraction methods failed.
 
-**AI response**: The AI returns a structured JSON response:
+**AI response**: The AI returns a structured JSON response with category-based sensitivity detection:
 
 ```json
 {
-  "sensitivity_rating": 4,
-  "categories_detected": ["PII - Tax Documents", "Financial Information"],
+  "categories": ["pii_government_id", "pii_financial"],
+  "context": "mixed",
   "summary": "This file appears to be a W-2 tax form containing an employee's SSN, employer identification number, and salary information.",
-  "confidence": "high",
   "recommendation": "This file should not be shared with anonymous or organization-wide access. Contact the user to restrict sharing."
 }
 ```
+
+**Sensitivity categories** are organized into tiers for escalation:
+- **Tier 1 (urgent)**: `pii_government_id`, `pii_financial`, `ferpa`, `hipaa`, `security_credentials`
+- **Tier 2 (normal)**: `hr_personnel`, `legal_confidential`, `pii_contact`
+- **Tier 3 (no escalation)**: `coursework`, `casual_personal`, `none`
+
+Escalation is deterministic: any Tier 1 or Tier 2 category triggers analyst notification. There is no configurable threshold.
 
 See doc 06 for the full AI prompt template, structured output enforcement, and response parsing.
 
@@ -356,10 +364,9 @@ See doc 06 for the full AI prompt template, structured output enforcement, and r
 
 Store the AI verdict in the `verdicts` database table:
 - event_id (FK to events table)
-- sensitivity_rating (1-5)
-- categories_detected (JSON array)
+- categories_detected (JSON array of category strings)
+- context (text — "mixed", "educational", "personal", etc.)
 - summary (text)
-- confidence (text)
 - recommendation (text)
 - ai_provider (which provider was used)
 - ai_model (which specific model)
@@ -374,9 +381,22 @@ Update the event record status from "processing" to "completed".
 
 Store the file hash in `file_hashes` if not already present (from Step 7).
 
+**Note**: The `sensitivity_rating` column is retained for backward compatibility with older rows but is nullable and no longer populated by the current category-based rubric.
+
+### Step 10.5: Enroll Sharing Links in Lifecycle
+
+After recording the verdict, the pipeline enrolls each anonymous/org-wide sharing permission into the `sharing_link_lifecycle` table. This enables the 180-day countdown process:
+
+- Fetch sharing permissions from the Graph API (`GET /drives/{driveId}/items/{itemId}/permissions`)
+- For each permission with `link.scope` of "anonymous" or "organization", insert a lifecycle row
+- Links with a Microsoft-set `expirationDateTime` are marked `ms_managed` and exempt from countdown notifications
+- Links without Microsoft expiration are marked `active` and start the 180-day countdown from `event_time`
+
+See **doc 11 (Sharing Link Lifecycle)** for the full lifecycle process.
+
 ### Step 11: Notify if Risky
 
-If the sensitivity_rating is 4 or 5, trigger analyst notification. See **doc 08 (Notification Service)** for details.
+If any detected category is Tier 1 or Tier 2, trigger analyst notification. See **doc 08 (Notification Service)** for details.
 
 **Notification payload**:
 - File name
@@ -385,7 +405,6 @@ If the sensitivity_rating is 4 or 5, trigger analyst notification. See **doc 08 
 - When the sharing link was created
 - Sharing type (anonymous or org-wide)
 - Sharing permission (view or edit)
-- Sensitivity rating
 - Categories detected
 - AI summary
 - Clickable sharing link (so the analyst can view the file directly)
@@ -469,7 +488,7 @@ async def retry_with_backoff(func, max_retries=3, base_delay=2):
 
 ## Concurrency
 
-The MVP runs a single worker instance processing one job at a time. This is sufficient for < 100 events/day. 
+The worker processes up to `MAX_CONCURRENT_JOBS` (default: 5) jobs concurrently using `asyncio.Semaphore`. This is sufficient for < 100 events/day with burst capacity during backfills.
 
 For future scaling:
 - Multiple worker instances can consume from the same Redis list (BLPOP is safe for concurrent consumers; each job is delivered to exactly one consumer).

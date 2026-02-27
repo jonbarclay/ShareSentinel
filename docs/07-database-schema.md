@@ -10,14 +10,14 @@ PostgreSQL stores all persistent state for ShareSentinel: event records, AI verd
 
 ### 1. events
 
-The primary table. One row per sharing event received from Splunk.
+The primary table. One row per sharing event received from the audit log poller.
 
 ```sql
 CREATE TABLE events (
     id SERIAL PRIMARY KEY,
     event_id VARCHAR(64) UNIQUE NOT NULL,        -- SHA-256 hash used for deduplication
     
-    -- From Splunk webhook payload
+    -- From audit log poller
     operation VARCHAR(100) NOT NULL,              -- e.g., "AnonymousLinkCreated"
     workload VARCHAR(50),                         -- "OneDrive" or "SharePoint"
     user_id VARCHAR(255) NOT NULL,                -- UPN of sharing user
@@ -67,7 +67,7 @@ CREATE TABLE events (
     received_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    raw_payload JSONB                             -- Complete original Splunk payload
+    raw_payload JSONB                             -- Complete original audit log record
 );
 
 -- Indexes
@@ -88,12 +88,12 @@ CREATE TABLE verdicts (
     id SERIAL PRIMARY KEY,
     event_id VARCHAR(64) NOT NULL REFERENCES events(event_id),
     
-    -- AI verdict
-    sensitivity_rating INT NOT NULL CHECK (sensitivity_rating BETWEEN 1 AND 5),
-    categories_detected JSONB DEFAULT '[]'::jsonb,   -- JSON array of category strings
-    summary TEXT,                                      -- AI's summary of findings
-    confidence VARCHAR(10),                            -- "high", "medium", "low"
-    recommendation TEXT,                               -- AI's recommended action
+    -- AI verdict (category-based sensitivity detection)
+    sensitivity_rating INT,                              -- DEPRECATED: nullable, kept for backward compat with old rows
+    categories_detected JSONB DEFAULT '[]'::jsonb,       -- JSON array of category strings (e.g., ["pii_financial", "ferpa"])
+    context VARCHAR(50),                                 -- "mixed", "educational", "personal", etc.
+    summary TEXT,                                         -- AI's summary of findings
+    recommendation TEXT,                                  -- AI's recommended action
     
     -- Analysis metadata
     analysis_mode VARCHAR(20) NOT NULL,                -- "text", "multimodal", "filename_only"
@@ -105,7 +105,7 @@ CREATE TABLE verdicts (
     processing_time_seconds DECIMAL(8, 2),
     
     -- Notification tracking
-    notification_required BOOLEAN DEFAULT FALSE,       -- Whether rating >= threshold
+    notification_required BOOLEAN DEFAULT FALSE,       -- Whether any Tier 1/2 category was detected
     notification_sent BOOLEAN DEFAULT FALSE,
     notification_sent_at TIMESTAMP WITH TIME ZONE,
     notification_channel VARCHAR(20),                  -- "email", "jira"
@@ -123,7 +123,7 @@ CREATE TABLE verdicts (
 
 -- Indexes
 CREATE INDEX idx_verdicts_event_id ON verdicts(event_id);
-CREATE INDEX idx_verdicts_rating ON verdicts(sensitivity_rating);
+-- idx_verdicts_rating removed (sensitivity_rating is deprecated)
 CREATE INDEX idx_verdicts_notification ON verdicts(notification_required, notification_sent);
 CREATE INDEX idx_verdicts_provider ON verdicts(ai_provider);
 CREATE INDEX idx_verdicts_created ON verdicts(created_at);
@@ -173,8 +173,11 @@ CREATE INDEX idx_audit_log_status ON audit_log(status);
 
 | Action | When | Details |
 |--------|------|---------|
-| `webhook_received` | Webhook listener receives a valid payload | operation, user_id, file_name, item_type |
+| `audit_event_ingested` | Audit log poller enqueues a new event | operation, user_id, file_name, item_type |
 | `duplicate_detected` | Deduplication catches a repeat event | event_id, original_received_at |
+| `lifecycle_enrolled` | Sharing link enrolled in 180-day lifecycle | permission_id, status (active/ms_managed) |
+| `lifecycle_notified` | Countdown notification sent to file owner | milestone, days_remaining |
+| `lifecycle_removed` | Sharing link removed at 180-day mark | permission_id, success |
 | `processing_started` | Worker picks up the job | event_id |
 | `metadata_fetched` | Graph API metadata call succeeds | file_size, mime_type |
 | `file_excluded` | File type is in exclusion list | extension, reason |
@@ -202,7 +205,78 @@ CREATE INDEX idx_audit_log_status ON audit_log(status);
 | `processing_failed` | Pipeline failed permanently | failure_reason |
 | `folder_share_flagged` | Folder share detected and flagged | user_id, object_id |
 
-### 5. configuration (optional, for future use)
+### 5. sharing_link_lifecycle
+
+Tracks the 180-day lifecycle of anonymous and org-wide sharing links, from creation through notification milestones to automatic removal.
+
+```sql
+CREATE TABLE IF NOT EXISTS sharing_link_lifecycle (
+    id SERIAL PRIMARY KEY,
+    event_id VARCHAR(64) NOT NULL REFERENCES events(event_id),
+    permission_id VARCHAR(255) NOT NULL,
+    drive_id VARCHAR(255) NOT NULL,
+    item_id VARCHAR(255) NOT NULL,
+    user_id VARCHAR(255) NOT NULL,
+
+    link_created_at TIMESTAMPTZ NOT NULL,        -- Day zero (from event_time)
+    ms_expiration_at TIMESTAMPTZ,                -- From Graph expirationDateTime (NULL if none)
+
+    -- 'active', 'ms_managed', 'expired_removed', 'manually_removed', 'error'
+    status VARCHAR(30) NOT NULL DEFAULT 'active',
+
+    -- Notification milestones (NULL = not yet sent)
+    notified_120d_at TIMESTAMPTZ,
+    notified_150d_at TIMESTAMPTZ,
+    notified_165d_at TIMESTAMPTZ,
+    notified_173d_at TIMESTAMPTZ,
+    notified_178d_at TIMESTAMPTZ,
+    notified_180d_at TIMESTAMPTZ,
+
+    -- Removal tracking
+    removal_attempted_at TIMESTAMPTZ,
+    removal_succeeded BOOLEAN,
+    removal_error TEXT,
+
+    -- Context for notifications (avoid joins)
+    file_name VARCHAR(500),
+    sharing_scope VARCHAR(50),
+    sharing_type VARCHAR(50),
+    link_url TEXT,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE (event_id, permission_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lifecycle_status ON sharing_link_lifecycle(status);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_active_due ON sharing_link_lifecycle(link_created_at) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_lifecycle_user_id ON sharing_link_lifecycle(user_id);
+```
+
+**Status values:**
+- `active` — Link is in the 180-day countdown. Will receive milestone notifications.
+- `ms_managed` — Microsoft set an `expirationDateTime` on this link. Exempt from our countdown and removal.
+- `expired_removed` — Link was automatically removed at the 180-day mark.
+- `manually_removed` — Analyst or user removed the link before expiration.
+- `error` — Removal was attempted but failed (see `removal_error`).
+
+### 6. audit_poll_state
+
+Single-row table tracking the audit log poller's progress.
+
+```sql
+CREATE TABLE IF NOT EXISTS audit_poll_state (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    last_poll_time TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    last_poll_status TEXT DEFAULT 'success',
+    events_found INTEGER DEFAULT 0,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT single_row CHECK (id = 1)
+);
+```
+
+### 7. configuration (optional, for future use)
 
 Stores configurable parameters that might be adjusted without redeployment. For the MVP, configuration comes from environment variables and config files. This table is a placeholder for a future admin UI.
 
@@ -217,11 +291,13 @@ CREATE TABLE configuration (
 
 -- Seed with defaults
 INSERT INTO configuration (key, value, description) VALUES
-    ('sensitivity_threshold', '4', 'Minimum sensitivity rating to trigger analyst notification'),
     ('max_file_size_bytes', '52428800', 'Maximum file size to download (50MB)'),
     ('text_content_limit', '100000', 'Maximum extracted text size in characters'),
     ('hash_reuse_days', '30', 'Days to consider a previous hash analysis valid for reuse'),
     ('dedup_ttl_seconds', '86400', 'Deduplication cache TTL in seconds');
+
+-- Note: sensitivity_threshold has been removed. Escalation is now deterministic
+-- based on category tiers (Tier 1/2 = escalate). No configurable threshold.
 ```
 
 ## Migration Strategy
@@ -305,7 +381,7 @@ Implement retention as a periodic cleanup job (weekly cron or background task).
 
 ## Security Notes
 
-- The `raw_payload` column in `events` stores the complete Splunk payload as JSONB. This is useful for debugging but may contain sensitive metadata. Access to the database should be restricted.
+- The `raw_payload` column in `events` stores the complete audit log record as JSONB. This is useful for debugging but may contain sensitive metadata. Access to the database should be restricted.
 - The `summary` field in `verdicts` may contain AI-generated descriptions of sensitive content (e.g., "This file contains SSNs for 500 employees"). This field should be treated as sensitive and not exposed in application logs.
 - Database credentials should be managed via Docker secrets or environment variables, never hardcoded.
 - The PostgreSQL instance should only be accessible from the Docker Compose internal network, not exposed on any host port.

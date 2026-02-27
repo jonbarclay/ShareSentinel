@@ -2,19 +2,37 @@
 
 ## Project Overview
 
-ShareSentinel is a containerized system that monitors OneDrive and SharePoint file sharing activity, automatically analyzing shared files for sensitive content, and alerting human analysts when risky files are detected.
+ShareSentinel is a containerized system that monitors OneDrive and SharePoint file sharing activity, automatically analyzing shared files for sensitive content, and alerting human analysts when risky files are detected. It also enforces a 180-day expiration policy on anonymous and organization-wide sharing links, sending countdown notifications to file owners and automatically removing links at expiration.
 
-The system receives webhook alerts from Splunk (triggered by Azure OneDrive/SharePoint sharing audit logs), downloads shared files via the Microsoft Graph API, preprocesses them, submits them to an AI model for sensitivity analysis, and notifies analysts of high-risk findings.
+The system polls the Microsoft Graph Audit Log Query API for sharing events, downloads shared files via the Microsoft Graph API, preprocesses them, submits them to an AI model for sensitivity analysis, and notifies analysts of high-risk findings.
 
 ## Core Workflow Summary
 
-1. Splunk fires a webhook when a user creates an anonymous link or organization-wide sharing link (edit or view) in OneDrive or SharePoint.
-2. The webhook listener validates, deduplicates, and queues the event.
-3. A worker process picks up the job, determines if the shared item is a file or folder.
+1. The audit log poller (in the lifecycle-cron container) queries the Microsoft Graph Audit Log Query API every 15 minutes for `AnonymousLinkCreated` and `CompanyLinkCreated` events.
+2. New events are deduplicated via Redis and pushed onto the Redis job queue.
+3. The worker picks up jobs (up to 5 concurrently), determines if the shared item is a file or folder.
 4. **Folders**: Immediately flag for analyst review (folders with broad sharing are inherently risky because future files added inherit the sharing scope).
 5. **Files**: Download via Graph API, preprocess (text extraction, OCR, image compression), send to AI for sensitivity analysis.
-6. If the AI rates the file sensitivity at 4 or 5 (out of 5), notify analysts with the file metadata and sharing link.
-7. Delete the temporary file after processing.
+6. If the AI detects Tier 1 or Tier 2 sensitivity categories (e.g., PII, FERPA, HIPAA), notify analysts with the file metadata and sharing link.
+7. Enroll each anonymous/org-wide sharing permission in the 180-day lifecycle tracker.
+8. Delete the temporary file after processing.
+
+## Sharing Link Lifecycle (180-Day Expiration)
+
+When a sharing event is processed, each anonymous/org-wide sharing permission is enrolled in `sharing_link_lifecycle`. Links with a Microsoft-set `expirationDateTime` are marked `ms_managed` and exempt from countdown notifications.
+
+**Milestone schedule for active links:**
+
+| Days | Action | Remaining |
+|-|-|-|
+| 120 | First countdown email to file owner | 60 |
+| 150 | Second countdown email | 30 |
+| 165 | Third countdown email | 15 |
+| 173 | Urgent reminder email | 7 |
+| 178 | Final warning email | 2 |
+| 180 | Remove link via Graph API + confirmation email | 0 |
+
+The lifecycle processor runs daily in the lifecycle-cron container.
 
 ## Architecture
 
@@ -22,38 +40,49 @@ The system runs as Docker Compose services on an Ubuntu server, with a future mi
 
 ### Containers
 
-- **webhook-listener**: FastAPI service that receives Splunk webhooks, validates payloads, deduplicates via Redis, and pushes jobs onto the Redis queue.
-- **worker**: Python service that pulls jobs from Redis, orchestrates the full processing pipeline (metadata pre-screen, download, text extraction, AI analysis, notification, cleanup).
+- **lifecycle-cron**: Runs two concurrent loops — (1) audit log poller that queries the Graph API every 15 minutes for new sharing events and pushes them to the Redis queue, and (2) lifecycle processor that checks sharing link expiry milestones daily, sends countdown notifications, and removes expired links.
+- **worker**: Python service that pulls jobs from Redis (up to 5 concurrently), orchestrates the full processing pipeline (metadata pre-screen, download, text extraction, AI analysis, lifecycle enrollment, notification, cleanup).
+- **dashboard**: React + FastAPI web UI for analysts to review events, verdicts, and statistics.
 - **redis**: Job queue, deduplication cache, and rate limiting state.
-- **postgres**: Event records, AI verdicts, analyst dispositions, audit log, configuration.
+- **postgres**: Event records, AI verdicts, analyst dispositions, sharing link lifecycle, audit poll state.
 
 ### Key Technology Choices
 
 - **Language**: Python 3.12+
-- **Web framework**: FastAPI (webhook listener)
-- **Queue**: Redis (using Redis lists or streams for job queuing)
+- **Event ingestion**: Direct polling of Microsoft Graph Audit Log Query API (beta)
+- **Queue**: Redis (using Redis lists for job queuing)
 - **Database**: PostgreSQL 16
 - **File storage**: tmpfs (RAM-backed mount in the worker container; files never touch persistent disk)
 - **Text extraction**: PyMuPDF (PDFs), python-docx (Word), openpyxl (Excel), python-pptx (PowerPoint), Tesseract OCR (scanned documents)
 - **Image processing**: Pillow (resizing/compression)
 - **AI providers**: Anthropic Claude API, OpenAI API, Google Gemini API (abstracted behind a common interface)
-- **Notifications**: Phase 1 = Email (SMTP), Phase 2 = Jira ticket creation
+- **Notifications**: Email (SMTP) for analyst alerts and lifecycle countdown emails; Jira ticket creation (Phase 2)
+
+## Sensitivity Detection (Category-Based)
+
+The AI returns detected sensitivity categories rather than a numeric rating. Categories are organized into tiers:
+
+- **Tier 1 (urgent)**: `pii_government_id`, `pii_financial`, `ferpa`, `hipaa`, `security_credentials`
+- **Tier 2 (normal)**: `hr_personnel`, `legal_confidential`, `pii_contact`
+- **Tier 3 (no escalation)**: `coursework`, `casual_personal`, `none`
+
+Escalation is deterministic: any Tier 1 or Tier 2 category triggers analyst notification. There is no configurable threshold.
 
 ## Detailed Planning Documents
 
-The following documents in the `docs/` directory contain detailed specifications for each component. Each document is self-contained enough to be used as a standalone implementation guide for a sub-agent.
+The following documents in the `docs/` directory contain detailed specifications for each component.
 
 | Document | Description |
-|----------|-------------|
+|-|-|
 | [docs/01-architecture-overview.md](docs/01-architecture-overview.md) | Full system architecture, data flow diagrams, container layout, technology rationale |
-| [docs/02-webhook-listener-service.md](docs/02-webhook-listener-service.md) | FastAPI webhook receiver, payload validation, deduplication, queue integration |
+| [docs/02-webhook-listener-service.md](docs/02-webhook-listener-service.md) | Event ingestion via audit log poller, Graph API query flow, record-to-job mapping |
 | [docs/03-file-processing-pipeline.md](docs/03-file-processing-pipeline.md) | Master orchestration logic for the worker: metadata pre-screen, download, classification, routing |
 | [docs/04-text-extraction-module.md](docs/04-text-extraction-module.md) | Text extraction strategies for every supported file type, sampling logic, OCR fallback |
 | [docs/05-image-preprocessing-module.md](docs/05-image-preprocessing-module.md) | Image resizing, compression, scanned PDF page rendering, multimodal preparation |
 | [docs/06-ai-provider-abstraction.md](docs/06-ai-provider-abstraction.md) | Provider interface, prompt management, structured output parsing, cost tracking, provider switching |
 | [docs/07-database-schema.md](docs/07-database-schema.md) | PostgreSQL tables, indexes, audit logging, migration strategy |
-| [docs/08-notification-service.md](docs/08-notification-service.md) | Phase 1 email alerting, Phase 2 Jira integration, notification interface design |
-| [docs/09-configuration-deployment.md](docs/09-configuration-deployment.md) | Docker Compose setup, environment variables, secrets, health checks, tmpfs config, Kubernetes migration notes |
+| [docs/08-notification-service.md](docs/08-notification-service.md) | Email alerting, Jira integration, notification interface design |
+| [docs/09-configuration-deployment.md](docs/09-configuration-deployment.md) | Docker Compose setup, environment variables, secrets, health checks, operations |
 | [docs/10-testing-calibration.md](docs/10-testing-calibration.md) | Test strategy, AI provider benchmarking, sample sensitive file creation, validation methodology |
 
 ## Project Structure
@@ -64,102 +93,64 @@ share-sentinel/
 ├── docker-compose.yml                 # Container orchestration
 ├── .env.example                       # Environment variable template
 ├── docs/                              # Planning documents (detailed specs)
-│   ├── 01-architecture-overview.md
-│   ├── 02-webhook-listener-service.md
-│   ├── 03-file-processing-pipeline.md
-│   ├── 04-text-extraction-module.md
-│   ├── 05-image-preprocessing-module.md
-│   ├── 06-ai-provider-abstraction.md
-│   ├── 07-database-schema.md
-│   ├── 08-notification-service.md
-│   ├── 09-configuration-deployment.md
-│   └── 10-testing-calibration.md
 ├── services/
-│   ├── webhook-listener/
+│   ├── lifecycle-cron/                # Audit log poller + 180-day lifecycle processor
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── app/
+│   │       ├── main.py               # Entry point (concurrent loops)
+│   │       ├── config.py             # LifecycleConfig
+│   │       ├── audit_poller.py       # Graph Audit Log Query API poller
+│   │       ├── processor.py          # Lifecycle milestone processor
+│   │       ├── notifier.py           # Countdown email notifications
+│   │       └── graph_api.py          # Graph API auth + helpers
+│   ├── worker/
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   ├── app/
-│   │   │   ├── __init__.py
-│   │   │   ├── main.py                # FastAPI app entry point
-│   │   │   ├── config.py              # Configuration loading
-│   │   │   ├── models.py              # Pydantic models for webhook payloads
-│   │   │   ├── validation.py          # Payload validation logic
-│   │   │   ├── deduplication.py        # Redis-based dedup
-│   │   │   └── queue.py               # Redis queue push logic
+│   │   │   ├── main.py              # Worker entry point (queue consumer loop)
+│   │   │   ├── config.py            # Configuration loading
+│   │   │   ├── pipeline/
+│   │   │   │   ├── orchestrator.py  # Master pipeline logic
+│   │   │   │   ├── metadata.py      # Graph API metadata pre-screen
+│   │   │   │   ├── downloader.py    # Graph API file download
+│   │   │   │   ├── classifier.py    # File type classification and routing
+│   │   │   │   ├── hasher.py        # File hash computation and dedup check
+│   │   │   │   ├── second_look.py   # Cross-provider AI verification
+│   │   │   │   └── cleanup.py       # Temp file deletion
+│   │   │   ├── extraction/          # Text extractors (PDF, DOCX, XLSX, etc.)
+│   │   │   ├── ai/                  # AI provider abstraction
+│   │   │   ├── notifications/       # Email + Jira notifiers
+│   │   │   ├── database/
+│   │   │   │   ├── connection.py    # PostgreSQL connection management
+│   │   │   │   ├── repositories.py  # Data access methods
+│   │   │   │   └── migrations/      # Schema migrations (001-012)
+│   │   │   ├── graph_api/           # Graph API auth + client + sharing
+│   │   │   ├── lifecycle/
+│   │   │   │   └── enrollment.py    # Sharing link lifecycle enrollment
+│   │   │   └── remediation/         # Sharing link removal poller
 │   │   └── tests/
-│   │       ├── test_validation.py
-│   │       ├── test_deduplication.py
-│   │       └── test_webhook.py
-│   └── worker/
+│   └── dashboard/
 │       ├── Dockerfile
-│       ├── requirements.txt
-│       ├── app/
-│       │   ├── __init__.py
-│       │   ├── main.py                # Worker entry point (queue consumer loop)
-│       │   ├── config.py              # Configuration loading
-│       │   ├── pipeline/
-│       │   │   ├── __init__.py
-│       │   │   ├── orchestrator.py    # Master pipeline logic
-│       │   │   ├── metadata.py        # Graph API metadata pre-screen
-│       │   │   ├── downloader.py      # Graph API file download
-│       │   │   ├── classifier.py      # File type classification and routing
-│       │   │   ├── hasher.py          # File hash computation and dedup check
-│       │   │   └── cleanup.py         # Temp file deletion
-│       │   ├── extraction/
-│       │   │   ├── __init__.py
-│       │   │   ├── base.py            # Base extractor interface
-│       │   │   ├── pdf_extractor.py   # PDF text extraction (PyMuPDF)
-│       │   │   ├── docx_extractor.py  # Word document extraction
-│       │   │   ├── xlsx_extractor.py  # Excel extraction
-│       │   │   ├── pptx_extractor.py  # PowerPoint extraction
-│       │   │   ├── csv_extractor.py   # CSV/TSV extraction
-│       │   │   ├── text_extractor.py  # Plain text file extraction
-│       │   │   ├── image_preprocessor.py  # Image resize/compression
-│       │   │   ├── ocr_extractor.py   # Tesseract OCR fallback
-│       │   │   └── archive_extractor.py   # ZIP/RAR manifest listing
-│       │   ├── ai/
-│       │   │   ├── __init__.py
-│       │   │   ├── base_provider.py   # Abstract provider interface
-│       │   │   ├── anthropic_provider.py
-│       │   │   ├── openai_provider.py
-│       │   │   ├── gemini_provider.py
-│       │   │   ├── prompt_manager.py  # Prompt template loading and rendering
-│       │   │   ├── response_parser.py # Structured output parsing
-│       │   │   └── cost_tracker.py    # Token/cost logging
-│       │   ├── notifications/
-│       │   │   ├── __init__.py
-│       │   │   ├── base_notifier.py   # Abstract notifier interface
-│       │   │   ├── email_notifier.py  # SMTP email (Phase 1)
-│       │   │   └── jira_notifier.py   # Jira ticket creation (Phase 2)
-│       │   ├── database/
-│       │   │   ├── __init__.py
-│       │   │   ├── connection.py      # PostgreSQL connection management
-│       │   │   ├── models.py          # SQLAlchemy or raw SQL models
-│       │   │   ├── repositories.py    # Data access methods
-│       │   │   └── migrations/        # Schema migrations
-│       │   │       └── 001_initial.sql
-│       │   └── graph_api/
-│       │       ├── __init__.py
-│       │       ├── auth.py            # Azure AD authentication
-│       │       ├── client.py          # Graph API client wrapper
-│       │       └── sharing.py         # Sharing link retrieval
-│       └── tests/
-│           ├── test_pipeline.py
-│           ├── test_extraction/
-│           ├── test_ai/
-│           └── test_notifications/
+│       ├── app/                      # FastAPI backend
+│       └── frontend/                 # React (Vite) frontend
 ├── config/
 │   ├── prompt_templates/
-│   │   └── sensitivity_analysis.txt   # The AI prompt template (configurable)
-│   ├── file_types.yml                 # File type classification config
+│   │   └── sensitivity_analysis_v2.txt  # Category-based AI prompt template
+│   ├── file_types.yml               # File type classification config
 │   └── notification_templates/
-│       └── analyst_alert.html         # Email template for analyst notifications
+│       ├── analyst_alert.html       # Email template for analyst notifications
+│       └── lifecycle_countdown.html # Email template for lifecycle countdown
 └── scripts/
-    ├── init_db.sql                    # Database initialization
-    └── test_webhook.sh                # Script to send test webhooks
+    ├── init_db.sql                  # Database initialization
+    ├── backfill_lifecycle_enrollment.py  # Backfill lifecycle rows for older events
+    └── various utility scripts
 ```
 
 ## Critical Design Decisions
+
+### Events are ingested via direct audit log polling
+The system queries the Microsoft Graph Audit Log Query API directly every 15 minutes, replacing the original Splunk webhook approach. This eliminates the Splunk dependency and provides a simpler, more reliable event pipeline.
 
 ### Files are ALWAYS text-extracted first
 For every file type that supports text extraction (PDF, DOCX, XLSX, PPTX, CSV, TXT), always extract text before sending to the AI. Send extracted text as a text-based prompt (cheaper, faster, often more accurate). Only fall back to multimodal (image-based) analysis when text extraction fails (scanned documents, actual images). This minimizes API costs significantly.
@@ -176,6 +167,9 @@ All downloaded files are stored on a tmpfs mount (RAM-backed filesystem) in the 
 ### AI provider is swappable via configuration
 The system uses an abstract provider interface. Switching between Anthropic, OpenAI, and Google Gemini requires only a configuration change, not a code change. All providers implement the same interface and return the same structured output format.
 
+### Sharing links are automatically removed after 180 days
+All anonymous and org-wide sharing links are enrolled in a lifecycle tracker. The system sends countdown notifications to file owners at 120, 150, 165, 173, and 178 days, then removes the link via the Graph API at 180 days. Links with Microsoft-managed expiration dates are exempt.
+
 ### Filename/path analysis is the fallback for unprocessable files
 Files that are too large to download, are excluded types (video, audio, binaries), or fail all extraction methods still get analyzed. The AI receives the filename, file path, file size, and sharing metadata and provides a sensitivity assessment based solely on that information.
 
@@ -186,15 +180,16 @@ Files that are too large to download, are excluded types (video, audio, binaries
 - **File size download limit**: 50MB. Files larger than this get filename/path analysis only.
 - **Text content limit for AI**: 100KB of extracted text (~25K tokens). Content exceeding this is sampled.
 - **Image size limit for multimodal**: Resize to longest edge 1600px, compress to JPEG quality 85, target under 1MB.
-- **Sensitivity threshold for alerts**: Rating of 4 or 5 (out of 5) triggers analyst notification.
+- **Sensitivity escalation**: Any Tier 1 or Tier 2 category triggers analyst notification. No configurable threshold.
+- **Sharing link expiration**: 180 days from link creation, with milestone notifications at 120, 150, 165, 173, and 178 days.
 - **Excluded file types**: Video (.mp4, .mov, .avi, .mkv, .wmv), Audio (.mp3, .wav, .m4a, .aac, .flac), Binaries (.exe, .dll, .bin), and other non-document types defined in config/file_types.yml.
 
 ## Development Workflow
 
 ### Execute Code Inside Docker Containers Only
-All code execution, testing, and debugging MUST happen inside the Docker containers — never on the host machine directly. The services (worker, webhook-listener, dashboard) depend on Redis, PostgreSQL, and inter-service networking that are only available within the Docker Compose environment.
+All code execution, testing, and debugging MUST happen inside the Docker containers — never on the host machine directly. The services (worker, lifecycle-cron, dashboard) depend on Redis, PostgreSQL, and inter-service networking that are only available within the Docker Compose environment.
 
-- **Run scripts**: Use `docker exec` to run commands inside the appropriate container (e.g., `docker exec sharesentinel-worker python -m scripts.test_csv_pipeline --dry-run`).
+- **Run scripts**: Use `docker exec` to run commands inside the appropriate container (e.g., `docker exec sharesentinel-worker python -m scripts.backfill_lifecycle_enrollment --dry-run`).
 - **Enqueue test jobs**: Use `docker exec sharesentinel-redis redis-cli RPUSH sharesentinel:jobs '{...}'` to push jobs onto the Redis queue.
 - **View logs**: Use `docker compose logs -f <service>` to follow container logs.
 - **Database queries**: Use `docker exec sharesentinel-postgres psql -U sharesentinel -d sharesentinel -c "SELECT ..."`.
@@ -203,8 +198,8 @@ All code execution, testing, and debugging MUST happen inside the Docker contain
 
 ## Environment and Authentication
 
-- **Microsoft Graph API**: Azure AD app registration with application permissions for Files.Read.All and Sites.Read.All. Uses client credentials flow (client_id + client_secret + tenant_id).
+- **Microsoft Graph API**: Azure AD app registration with application permissions for `Files.Read.All`, `Sites.Read.All`, `Sites.FullControl.All` (for link removal), and `AuditLogsQuery.Read.All` (for audit log polling). Uses client credentials flow (client_id + client_secret + tenant_id) with optional certificate auth.
 - **AI APIs**: API keys for each provider stored as environment variables or Docker secrets.
-- **SMTP**: Configured for analyst email notifications.
+- **SMTP**: Configured for analyst email notifications and lifecycle countdown emails.
 - **PostgreSQL**: Connection string via environment variable.
 - **Redis**: Connection string via environment variable.

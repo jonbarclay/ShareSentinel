@@ -31,10 +31,9 @@ class AlertPayload:
     sharing_link_url: Optional[str]     # Clickable link to the shared item
     
     # AI analysis results (NULL for folder shares and processing failures)
-    sensitivity_rating: Optional[int]
-    categories_detected: Optional[List[str]]
+    categories_detected: Optional[List[str]]  # e.g., ["pii_financial", "ferpa"]
+    context: Optional[str]              # "mixed", "educational", "personal", etc.
     summary: Optional[str]
-    confidence: Optional[str]
     recommendation: Optional[str]
     analysis_mode: Optional[str]        # "text", "multimodal", "filename_only"
     
@@ -69,7 +68,8 @@ Send formatted HTML emails to one or more analyst email addresses via SMTP.
 ### Email Template Structure
 
 **Subject line patterns:**
-- High sensitivity: `[ShareSentinel] ⚠️ High Sensitivity File Detected (Rating: {rating}/5) - {file_name}`
+- Sensitive file (Tier 1): `[ShareSentinel] ⚠️ Urgent: Sensitive File Detected - {file_name}`
+- Sensitive file (Tier 2): `[ShareSentinel] Sensitive File Detected - {file_name}`
 - Folder share: `[ShareSentinel] 📁 Folder Shared with {sharing_type} Access - {file_name}`
 - Processing failure: `[ShareSentinel] ❌ Processing Failed - {file_name}`
 
@@ -78,8 +78,8 @@ Send formatted HTML emails to one or more analyst email addresses via SMTP.
 The email should contain the following sections:
 
 1. **Alert Summary Banner**
-   - Alert type (color-coded: red for rating 5, orange for rating 4, yellow for folder share)
-   - Sensitivity rating (if applicable)
+   - Alert type (color-coded: red for Tier 1 categories, orange for Tier 2, yellow for folder share)
+   - Detected categories (if applicable)
    - Quick action link (the sharing link)
 
 2. **File Details**
@@ -95,8 +95,7 @@ The email should contain the following sections:
    - When the link was created
 
 4. **AI Analysis Results** (for file alerts)
-   - Sensitivity rating with visual indicator
-   - Categories detected
+   - Categories detected with tier indicator
    - Summary of findings
    - Confidence level
    - AI recommendation
@@ -199,12 +198,12 @@ Create Jira tickets for each alert, enabling proper tracking and workflow manage
 **Fields:**
 - **Summary**: Same pattern as email subject line
 - **Description**: Formatted version of the email body (using Jira wiki markup or ADF)
-- **Priority**: 
-  - Rating 5 → "Highest"
-  - Rating 4 → "High"
+- **Priority**:
+  - Tier 1 categories (pii_government_id, ferpa, hipaa, etc.) → "Highest"
+  - Tier 2 categories (hr_personnel, legal_confidential, pii_contact) → "High"
   - Folder share → "Medium"
   - Processing failure → "Low"
-- **Labels**: `sharesentinel`, `dlp`, sensitivity rating label (e.g., `sensitivity-5`)
+- **Labels**: `sharesentinel`, `dlp`, category labels (e.g., `pii_financial`, `ferpa`)
 - **Assignee**: Configurable (assign to a team or individual)
 - **Components**: Configurable (e.g., "Data Loss Prevention")
 - **Custom fields** (if available): sensitivity_rating, sharing_user, file_name
@@ -277,40 +276,51 @@ class NotificationDispatcher:
 
 The pipeline triggers notifications in these cases:
 
-1. **High sensitivity file** (rating 4 or 5): The AI determined the file contains sensitive content.
+1. **Sensitive file** (Tier 1 or Tier 2 category detected): The AI determined the file contains sensitive content. Escalation is deterministic — any Tier 1 or Tier 2 category triggers notification with no configurable threshold.
 2. **Folder share**: A folder was shared with anonymous or org-wide access (always triggers, regardless of AI).
 3. **Processing failure** (optional): A file could not be analyzed due to repeated failures. The analyst should be aware that a sharing event occurred but couldn't be evaluated.
 
-The sensitivity threshold (default: 4) should be configurable via the `configuration` database table or environment variable.
+**Category tiers for escalation:**
+- **Tier 1 (urgent)**: `pii_government_id`, `pii_financial`, `ferpa`, `hipaa`, `security_credentials`
+- **Tier 2 (normal)**: `hr_personnel`, `legal_confidential`, `pii_contact`
+- **Tier 3 (no escalation)**: `coursework`, `casual_personal`, `none`
 
 ```python
+# Tier definitions
+TIER_1 = {"pii_government_id", "pii_financial", "ferpa", "hipaa", "security_credentials"}
+TIER_2 = {"hr_personnel", "legal_confidential", "pii_contact"}
+
 async def maybe_notify(event: dict, verdict: dict, dispatcher: NotificationDispatcher, db):
     """Determine if notification is needed and send it."""
-    
+
     should_notify = False
     alert_type = None
-    
+
     if event["item_type"] == "Folder":
         should_notify = True
         alert_type = "folder_share"
-    elif verdict and verdict["sensitivity_rating"] >= SENSITIVITY_THRESHOLD:
-        should_notify = True
-        alert_type = "high_sensitivity_file"
+    elif verdict:
+        categories = set(verdict.get("categories_detected", []))
+        if categories & TIER_1:
+            should_notify = True
+            alert_type = "high_sensitivity_file"  # urgent
+        elif categories & TIER_2:
+            should_notify = True
+            alert_type = "high_sensitivity_file"
     elif event["status"] == "failed":
-        should_notify = True  # Optional: alert on processing failures
+        should_notify = True
         alert_type = "processing_failure"
-    
+
     if should_notify:
         payload = build_alert_payload(event, verdict, alert_type)
         results = await dispatcher.dispatch(payload)
-        
-        # Record notification status in database
+
         for channel, success in results.items():
             await db.update_notification_status(
                 event_id=event["event_id"],
                 sent=success,
                 channel=channel,
-                reference=""  # Jira ticket key, email message ID, etc.
+                reference=""
             )
 ```
 
@@ -319,7 +329,6 @@ async def maybe_notify(event: dict, verdict: dict, dispatcher: NotificationDispa
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `NOTIFICATION_CHANNELS` | Comma-separated list of active channels | `email` |
-| `SENSITIVITY_THRESHOLD` | Minimum rating to trigger notification | `4` |
 | `NOTIFY_ON_FOLDER_SHARE` | Whether to notify on folder shares | `true` |
 | `NOTIFY_ON_FAILURE` | Whether to notify on processing failures | `true` |
 | `SMTP_HOST` | SMTP server hostname | (required for email) |
