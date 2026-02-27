@@ -25,7 +25,7 @@
 }
 
 .brand-logo {
-  margin-right: auto;
+  margin-right: 2rem;
   font-size: 1.1rem;
   color: #ffffff;
   letter-spacing: -0.01em;
@@ -35,6 +35,36 @@
 .nav-links {
   display: flex;
   gap: 2rem;
+  margin-right: auto;
+}
+
+.nav-user {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-left: 2rem;
+}
+
+.nav-user-name {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.nav-logout-btn {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  padding: 4px 12px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.nav-logout-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
 }
 
 .nav-link {

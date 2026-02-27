@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   worker:
     build:
@@ -18,7 +16,6 @@ services:
       # Microsoft Graph API
       - AZURE_TENANT_ID=${AZURE_TENANT_ID}
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
-      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
       - AZURE_CERTIFICATE=/app/certs/JonPnPCert.pfx
       - AZURE_CERTIFICATE_PASS=${AZURE_CERTIFICATE_PASS}
 
@@ -87,24 +84,59 @@ services:
         max-size: "50m"
         max-file: "5"
 
-  dashboard:
+  nginx:
     build:
-      context: ./services/dashboard
+      context: ./nginx
       dockerfile: Dockerfile
-    container_name: sharesentinel-dashboard
+    container_name: sharesentinel-nginx
     ports:
-      - "${DASHBOARD_HOST_PORT:-8080}:8080"
-    environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-sharesentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharesentinel}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:8080,http://127.0.0.1:8080}
+      - "443:443"
+    volumes:
+      - ./nginx/certs:/etc/nginx/certs:ro
     depends_on:
-      postgres:
+      dashboard:
         condition: service_healthy
     restart: unless-stopped
     networks:
       - sharesentinel
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      test: ["CMD", "curl", "-fsk", "https://localhost:443/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  dashboard:
+    build:
+      context: ./services/dashboard
+      dockerfile: Dockerfile
+    container_name: sharesentinel-dashboard
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-sharesentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharesentinel}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-https://sharesentinel.uvu.edu}
+      - REDIS_URL=redis://redis:6379/0
+
+      # Entra ID SSO (OpenID Connect)
+      - OIDC_TENANT_ID=${OIDC_TENANT_ID}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID}
+      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET}
+      - OIDC_REDIRECT_URI=${OIDC_REDIRECT_URI:-https://sharesentinel.uvu.edu/api/auth/callback}
+      - OIDC_ALLOWED_GROUP_IDS=${OIDC_ALLOWED_GROUP_IDS}
+      - SESSION_SECRET_KEY=${SESSION_SECRET_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - sharesentinel
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -130,7 +162,6 @@ services:
       # Microsoft Graph API
       - AZURE_TENANT_ID=${AZURE_TENANT_ID}
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
-      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
       - AZURE_CERTIFICATE=/app/certs/JonPnPCert.pfx
       - AZURE_CERTIFICATE_PASS=${AZURE_CERTIFICATE_PASS}
 
@@ -160,6 +191,8 @@ services:
       redis:
         condition: service_healthy
       postgres:
+        condition: service_healthy
+      worker:
         condition: service_healthy
     restart: unless-stopped
     networks:
