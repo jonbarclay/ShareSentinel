@@ -70,6 +70,9 @@ class Config:
     second_look_provider: str = "gemini"
     second_look_model: str = "gemini-3.1-pro-preview"
 
+    # Concurrency
+    max_concurrent_jobs: int = 5
+
     # Logging
     log_level: str = "INFO"
 
@@ -124,6 +127,7 @@ class Config:
             second_look_enabled=os.environ.get("SECOND_LOOK_ENABLED", "false").lower() == "true",
             second_look_provider=os.environ.get("SECOND_LOOK_PROVIDER", "gemini"),
             second_look_model=os.environ.get("SECOND_LOOK_MODEL", "gemini-3.1-pro-preview"),
+            max_concurrent_jobs=int(os.environ.get("MAX_CONCURRENT_JOBS", "5")),
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
             prompt_template_dir=os.environ.get("PROMPT_TEMPLATE_DIR", "config/prompt_templates"),
         )

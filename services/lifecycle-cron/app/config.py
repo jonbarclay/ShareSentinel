@@ -35,7 +35,7 @@ class LifecycleConfig:
     redis_url: str = ""
     audit_poll_enabled: bool = True
     audit_poll_interval_minutes: int = 15
-    audit_poll_operations: str = "AnonymousLinkCreated,CompanyLinkCreated,SharingSet"
+    audit_poll_operations: str = "AnonymousLinkCreated,CompanyLinkCreated"
 
     # Logging
     log_level: str = "INFO"
@@ -63,7 +63,7 @@ class LifecycleConfig:
             audit_poll_interval_minutes=int(os.environ.get("AUDIT_POLL_INTERVAL_MINUTES", "15")),
             audit_poll_operations=os.environ.get(
                 "AUDIT_POLL_OPERATIONS",
-                "AnonymousLinkCreated,CompanyLinkCreated,SharingSet",
+                "AnonymousLinkCreated,CompanyLinkCreated",
             ),
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
         )

@@ -60,6 +60,11 @@ async def enroll_sharing_links(
         )
         return 0
 
+    # Ensure event_time is a datetime (may arrive as ISO string from audit poller)
+    if isinstance(event_time, str):
+        from datetime import timezone
+        event_time = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
+
     enrolled = 0
 
     for perm in permissions:

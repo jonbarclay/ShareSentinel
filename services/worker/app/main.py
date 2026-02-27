@@ -233,7 +233,30 @@ async def main() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _signal_handler)
 
-    logger.info("Listening for jobs on %s", QUEUE_KEY)
+    semaphore = asyncio.Semaphore(config.max_concurrent_jobs)
+    active_tasks: set[asyncio.Task] = set()
+    logger.info(
+        "Listening for jobs on %s (max_concurrent=%d)",
+        QUEUE_KEY, config.max_concurrent_jobs,
+    )
+
+    async def _run_job(job: dict[str, Any]) -> None:
+        async with semaphore:
+            try:
+                await process_job(
+                    job_data=job,
+                    config=config,
+                    db_pool=db_pool,
+                    redis=redis_conn,
+                    ai_provider=ai_provider,
+                    notifier_dispatcher=notifier_dispatcher,
+                    second_look_provider=second_look_provider,
+                )
+            except Exception:
+                logger.error(
+                    "Error processing job %s", job.get("event_id", "?"),
+                    exc_info=True,
+                )
 
     while not shutdown_event.is_set():
         try:
@@ -251,15 +274,13 @@ async def main() -> None:
                 job.get("file_name", "?"),
             )
 
-            await process_job(
-                job_data=job,
-                config=config,
-                db_pool=db_pool,
-                redis=redis_conn,
-                ai_provider=ai_provider,
-                notifier_dispatcher=notifier_dispatcher,
-                second_look_provider=second_look_provider,
-            )
+            # Wait for a slot before accepting the next job
+            await semaphore.acquire()
+            semaphore.release()
+
+            task = asyncio.create_task(_run_job(job))
+            active_tasks.add(task)
+            task.add_done_callback(active_tasks.discard)
 
         except json.JSONDecodeError as exc:
             logger.error("Invalid JSON on queue: %s", exc)
@@ -269,7 +290,11 @@ async def main() -> None:
             logger.error("Unhandled exception in main loop", exc_info=True)
             await asyncio.sleep(5)
 
-    # Shutdown
+    # Shutdown: wait for in-flight jobs to finish
+    if active_tasks:
+        logger.info("Waiting for %d in-flight jobs to finish...", len(active_tasks))
+        await asyncio.gather(*active_tasks, return_exceptions=True)
+
     logger.info("Worker shutting down")
     await redis_conn.aclose()
     await db_pool.close()

@@ -40,6 +40,6 @@ CREATE TABLE IF NOT EXISTS sharing_link_lifecycle (
     UNIQUE (event_id, permission_id)
 );
 
-CREATE INDEX idx_lifecycle_status ON sharing_link_lifecycle(status);
-CREATE INDEX idx_lifecycle_active_due ON sharing_link_lifecycle(link_created_at) WHERE status = 'active';
-CREATE INDEX idx_lifecycle_user_id ON sharing_link_lifecycle(user_id);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_status ON sharing_link_lifecycle(status);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_active_due ON sharing_link_lifecycle(link_created_at) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_lifecycle_user_id ON sharing_link_lifecycle(user_id);

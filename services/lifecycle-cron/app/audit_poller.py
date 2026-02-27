@@ -113,8 +113,21 @@ class AuditLogPoller:
 
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
             while elapsed < QUERY_TIMEOUT_S:
-                resp = await client.get(url, headers=headers)
-                resp.raise_for_status()
+                try:
+                    resp = await client.get(url, headers=headers)
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code in (502, 503, 504, 429):
+                        logger.warning(
+                            "Transient %d polling query %s, retrying...",
+                            e.response.status_code, query_id,
+                        )
+                        await asyncio.sleep(QUERY_POLL_INTERVAL_S)
+                        elapsed += QUERY_POLL_INTERVAL_S
+                        headers = {"Authorization": f"Bearer {self._auth.get_access_token()}"}
+                        continue
+                    raise
+
                 data = resp.json()
                 status = data.get("status", "unknown")
 
