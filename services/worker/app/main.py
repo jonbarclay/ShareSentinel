@@ -99,6 +99,10 @@ def create_notification_dispatcher(config: Config) -> NotificationDispatcher:
     """Build a NotificationDispatcher with all configured channels."""
     notifiers: List[BaseNotifier] = []
 
+    if not config.analyst_notification_enabled:
+        logger.info("Analyst notifications disabled (ANALYST_NOTIFICATION_ENABLED=false)")
+        return NotificationDispatcher(notifiers)
+
     for channel in config.notification_channels:
         channel = channel.strip().lower()
         if channel == "email":

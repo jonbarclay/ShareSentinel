@@ -40,6 +40,7 @@ class Config:
     tmpfs_path: str = "/tmp/sharesentinel"
 
     # Notifications
+    analyst_notification_enabled: bool = True
     notification_channels: List[str] = field(default_factory=lambda: ["email"])
     notify_on_folder_share: bool = True
     notify_on_failure: bool = True
@@ -116,6 +117,7 @@ class Config:
             max_file_size_bytes=int(os.environ.get("MAX_FILE_SIZE_BYTES", "52428800")),
             text_content_limit=int(os.environ.get("TEXT_CONTENT_LIMIT", "100000")),
             hash_reuse_days=int(os.environ.get("HASH_REUSE_DAYS", "30")),
+            analyst_notification_enabled=os.environ.get("ANALYST_NOTIFICATION_ENABLED", "true").lower() == "true",
             notification_channels=[c.strip() for c in channels_raw.split(",") if c.strip()],
             notify_on_folder_share=os.environ.get("NOTIFY_ON_FOLDER_SHARE", "true").lower() == "true",
             notify_on_failure=os.environ.get("NOTIFY_ON_FAILURE", "true").lower() == "true",

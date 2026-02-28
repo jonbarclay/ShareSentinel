@@ -1,8 +1,8 @@
 services:
   worker:
     build:
-      context: ./services/worker
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/worker/Dockerfile
     container_name: sharesentinel-worker
     tmpfs:
       - /tmp/sharesentinel:size=256M,mode=1777
@@ -44,6 +44,7 @@ services:
       - HASH_REUSE_DAYS=${HASH_REUSE_DAYS:-30}
 
       # Notifications
+      - ANALYST_NOTIFICATION_ENABLED=${ANALYST_NOTIFICATION_ENABLED:-true}
       - NOTIFICATION_CHANNELS=${NOTIFICATION_CHANNELS:-email}
       - NOTIFY_ON_FOLDER_SHARE=${NOTIFY_ON_FOLDER_SHARE:-true}
       - NOTIFY_ON_FAILURE=${NOTIFY_ON_FAILURE:-true}
@@ -139,6 +140,8 @@ services:
       - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET}
       - OIDC_REDIRECT_URI=${OIDC_REDIRECT_URI:-https://sharesentinel.uvu.edu/api/auth/callback}
       - OIDC_ALLOWED_GROUP_IDS=${OIDC_ALLOWED_GROUP_IDS}
+      - OIDC_ADMIN_GROUP_IDS=${OIDC_ADMIN_GROUP_IDS:-}
+      - OIDC_ANALYST_GROUP_IDS=${OIDC_ANALYST_GROUP_IDS:-}
       - SESSION_SECRET_KEY=${SESSION_SECRET_KEY}
       - AUTH_DISABLED=${AUTH_DISABLED:-}
       - DASHBOARD_URL=${DASHBOARD_URL:-https://sharesentinel.uvu.edu}
@@ -166,8 +169,8 @@ services:
 
   lifecycle-cron:
     build:
-      context: ./services/lifecycle-cron
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/lifecycle-cron/Dockerfile
     container_name: sharesentinel-lifecycle-cron
     environment:
       # Database
