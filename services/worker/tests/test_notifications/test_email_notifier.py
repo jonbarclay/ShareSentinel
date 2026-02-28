@@ -195,23 +195,26 @@ class TestTemplateRendering:
         assert "AI Analysis Results" not in html
 
     def test_plain_text_fallback(self):
+        notifier = _make_notifier()
         payload = _sample_payload()
-        text = EmailNotifier._build_plain_text(payload)
+        text = notifier._build_plain_text(payload)
 
         assert "Q4-Financials.xlsx" in text
         assert "tier_1" in text
         assert "Financial" in text  # category label
         assert "jane.doe@contoso.com" in text
         assert "evt-abc-123" in text
+        assert "sharesentinel.uvu.edu/events/evt-abc-123" in text
 
     def test_plain_text_folder_no_ai(self):
+        notifier = _make_notifier()
         payload = _sample_payload(
             alert_type="folder_share",
             categories=None,
             escalation_tier=None,
             summary=None,
         )
-        text = EmailNotifier._build_plain_text(payload)
+        text = notifier._build_plain_text(payload)
 
         assert "AI ANALYSIS RESULTS" not in text
         assert "FOLDER SHARED WITH BROAD ACCESS" in text

@@ -206,6 +206,65 @@ class GraphClient:
                         )
                 url = data.get("@odata.nextLink")
 
+    async def get_site_owners(self, site_url: str) -> List[Dict[str, Any]]:
+        """Fetch the owners of a SharePoint site.
+
+        Strategy: resolve the site to get its associated Microsoft 365
+        group ID, then call ``GET /groups/{groupId}/owners``.
+
+        Returns a list of user dicts (displayName, mail, id).
+        Returns an empty list on any error.
+        """
+        site_id = self._site_id_from_url(site_url)
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                # Step 1: Get the site to resolve the full Graph site ID
+                site_resp = await client.get(
+                    f"{GRAPH_BASE}/sites/{site_id}?$select=id,displayName",
+                    headers=self._headers(),
+                )
+                if site_resp.status_code >= 400:
+                    logger.warning(
+                        "Graph API %d looking up site %s: %s",
+                        site_resp.status_code, site_url, site_resp.text[:200],
+                    )
+                    return []
+
+                site_data = site_resp.json()
+                # The group info may be in the response directly or we need
+                # to query the site's associated group via the root site ID
+                graph_site_id = site_data.get("id", "")
+
+                # Step 2: Try to get the group owners via /sites/{id}/owners
+                # (available in some tenants) or fall back to group lookup
+                owners_resp = await client.get(
+                    f"{GRAPH_BASE}/sites/{graph_site_id}/permissions"
+                    "?$filter=roles/any(r:r eq 'owner')"
+                    "&$select=id,roles,grantedToV2",
+                    headers=self._headers(),
+                )
+                if owners_resp.status_code < 400:
+                    perms = owners_resp.json().get("value", [])
+                    owners = []
+                    for perm in perms:
+                        granted = perm.get("grantedToV2", {})
+                        user = granted.get("user", {})
+                        if user.get("email") or user.get("displayName"):
+                            owners.append({
+                                "mail": user.get("email", ""),
+                                "displayName": user.get("displayName", ""),
+                                "id": user.get("id", ""),
+                            })
+                    if owners:
+                        return owners
+
+                logger.debug("No owners found via permissions for site %s", site_url)
+                return []
+
+        except Exception as exc:
+            logger.warning("Failed to get site owners for %s: %s", site_url, exc)
+            return []
+
     async def get_user_profile(self, user_id: str) -> Dict[str, Any]:
         """Fetch user profile from Graph API.
 

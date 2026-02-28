@@ -1,11 +1,15 @@
 """Verdicts API endpoints."""
 
+import json
+import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 import asyncpg
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["verdicts"])
 
@@ -15,9 +19,11 @@ def _pool(request: Request) -> asyncpg.Pool:
 
 
 class AnalystReview(BaseModel):
-    disposition: str
+    disposition: Literal[
+        "true_positive", "moderate_risk", "acceptable_risk",
+        "needs_investigation", "false_positive",
+    ]
     notes: str = ""
-    reviewed_by: str = ""
 
 
 @router.get("/verdicts")
@@ -43,7 +49,6 @@ async def list_verdicts(
             params.append(tier)
             idx += 1
     if category is not None:
-        import json
         conditions.append(f"v.category_assessments @> ${idx}::jsonb")
         params.append(json.dumps([{"id": category}]))
         idx += 1
@@ -86,6 +91,12 @@ async def list_verdicts(
 @router.patch("/verdicts/{event_id}")
 async def review_verdict(request: Request, event_id: str, body: AnalystReview):
     pool = _pool(request)
+
+    # Use the authenticated session identity; fall back to "analyst" when auth
+    # is disabled (AUTH_DISABLED=true).
+    user = getattr(request.state, "user", None)
+    reviewed_by = user["email"] if user else "analyst"
+
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -98,7 +109,7 @@ async def review_verdict(request: Request, event_id: str, body: AnalystReview):
             WHERE event_id = $5
             """,
             datetime.now(timezone.utc),
-            body.reviewed_by,
+            reviewed_by,
             body.disposition,
             body.notes,
             event_id,
@@ -115,11 +126,26 @@ async def review_verdict(request: Request, event_id: str, body: AnalystReview):
                 RETURNING id, status
                 """,
                 event_id,
-                body.reviewed_by or "analyst",
+                reviewed_by,
             )
             if row:
                 remediation_id = row["id"]
                 remediation_status = row["status"]
+
+    # Queue user notification for moderate_risk disposition
+    if body.disposition == "moderate_risk":
+        try:
+            redis_conn = request.app.state.redis
+            await redis_conn.rpush(
+                "sharesentinel:user_notifications",
+                json.dumps({"event_id": event_id, "disposition": "moderate_risk"}),
+            )
+            logger.info("Queued user notification for event %s (moderate_risk)", event_id)
+        except Exception:
+            logger.error(
+                "Failed to queue user notification for event %s", event_id,
+                exc_info=True,
+            )
 
     return {
         "status": "updated",

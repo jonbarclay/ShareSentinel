@@ -315,15 +315,16 @@
 {% endif %}
 </div>
 
-{% if sharing_links %}
 <div style="text-align:center;margin-bottom:20px;">
-  <a href="{{ sharing_links[0].url }}" style="display:inline-block;background-color:#0052cc;color:#ffffff;padding:10px 24px;border-radius:4px;text-decoration:none;font-weight:600;font-size:14px;">View Shared Item</a>
+  <a href="{{ dashboard_url }}/events/{{ event_id }}" style="display:inline-block;background-color:#0052cc;color:#ffffff;padding:10px 24px;border-radius:4px;text-decoration:none;font-weight:600;font-size:14px;">View in ShareSentinel</a>
+  {% if sharing_links %}
+  &nbsp;&nbsp;
+  <a href="{{ sharing_links[0].url }}" style="display:inline-block;background-color:#ffffff;color:#0052cc;padding:10px 24px;border-radius:4px;text-decoration:none;font-weight:600;font-size:14px;border:2px solid #0052cc;">View Shared Item</a>
+  {% elif sharing_link_url %}
+  &nbsp;&nbsp;
+  <a href="{{ sharing_link_url }}" style="display:inline-block;background-color:#ffffff;color:#0052cc;padding:10px 24px;border-radius:4px;text-decoration:none;font-weight:600;font-size:14px;border:2px solid #0052cc;">View Shared Item</a>
+  {% endif %}
 </div>
-{% elif sharing_link_url %}
-<div style="text-align:center;margin-bottom:20px;">
-  <a href="{{ sharing_link_url }}" style="display:inline-block;background-color:#0052cc;color:#ffffff;padding:10px 24px;border-radius:4px;text-decoration:none;font-weight:600;font-size:14px;">View Shared Item</a>
-</div>
-{% endif %}
 
 </td></tr>
 

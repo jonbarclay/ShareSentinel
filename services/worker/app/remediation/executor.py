@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 import asyncpg
 import httpx
+import redis.asyncio as aioredis
 
 from ..config import Config
 from ..database.repositories import AuditLogRepository, UserProfileRepository
@@ -61,6 +62,7 @@ async def execute_remediation(
     db_pool: asyncpg.Pool,
     config: Config,
     auth: GraphAuth,
+    redis_conn: Optional[aioredis.Redis] = None,
 ) -> None:
     """Run the full remediation for a single remediations row.
 
@@ -155,13 +157,10 @@ async def execute_remediation(
             {"reason": "Missing drive_id or item_id_graph"},
         )
 
-    # ---- 3. Build and send remediation report ----
-    owner_email: Optional[str] = profile.get("mail") if profile else None
+    # ---- 3. Build and send remediation report (security team only) ----
     to_addresses: List[str] = []
     if config.security_email:
         to_addresses.append(config.security_email)
-    if owner_email and owner_email not in to_addresses:
-        to_addresses.append(owner_email)
 
     report_sent = False
     report_sent_at: Optional[datetime] = None
@@ -217,6 +216,7 @@ async def execute_remediation(
             to_addresses=to_addresses,
             use_tls=config.smtp_use_tls,
             template_name="remediation_report.html",
+            dashboard_url=config.dashboard_url,
         )
 
         try:
@@ -288,6 +288,17 @@ async def execute_remediation(
         "Remediation %d completed for %s: removed=%d failed=%d report=%s",
         remediation_id, event_id, permissions_removed, permissions_failed, report_sent,
     )
+
+    # ---- 6. Queue user notification (true_positive) ----
+    if redis_conn is not None:
+        try:
+            await redis_conn.rpush(
+                "sharesentinel:user_notifications",
+                json.dumps({"event_id": event_id, "disposition": "true_positive"}),
+            )
+            logger.info("Queued user notification for event %s (true_positive)", event_id)
+        except Exception:
+            logger.error("Failed to queue user notification for event %s", event_id, exc_info=True)
 
 
 async def _mark_failed(

@@ -12,5 +12,8 @@ jinja2>=3.1.0
 # Redis (audit log poller)
 redis>=5.0.0
 
+# SharePoint admin (CSOM) for allowlist enforcement
+Office365-REST-Python-Client>=2.5.0
+
 # Logging
 python-json-logger>=2.0.0

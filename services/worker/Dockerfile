@@ -22,6 +22,6 @@ RUN useradd -m -r appuser && chown -R appuser:appuser /app /tmp/sharesentinel
 USER appuser
 
 HEALTHCHECK --interval=60s --timeout=10s --retries=3 \
-    CMD python -c "import redis; r = redis.from_url('redis://redis:6379/0'); r.ping()"
+    CMD python -c "import os, redis; r = redis.from_url(os.environ.get('REDIS_URL', 'redis://redis:6379/0')); r.ping()"
 
 CMD ["python", "-m", "app.main"]

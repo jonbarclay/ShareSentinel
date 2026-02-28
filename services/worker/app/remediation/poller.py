@@ -7,6 +7,7 @@ import logging
 from typing import Any, Dict, Optional
 
 import asyncpg
+import redis.asyncio as aioredis
 
 from ..config import Config
 from ..graph_api.auth import GraphAuth
@@ -21,6 +22,7 @@ async def remediation_poller(
     db_pool: asyncpg.Pool,
     config: Config,
     auth: GraphAuth,
+    redis_conn: Optional[aioredis.Redis] = None,
 ) -> None:
     """Continuously poll for pending remediations and execute them.
 
@@ -38,7 +40,7 @@ async def remediation_poller(
                     row["id"], row["event_id"],
                 )
                 try:
-                    await execute_remediation(row, db_pool, config, auth)
+                    await execute_remediation(row, db_pool, config, auth, redis_conn=redis_conn)
                 except Exception:
                     logger.exception(
                         "Unhandled error executing remediation id=%d", row["id"],

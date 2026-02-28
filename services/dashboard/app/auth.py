@@ -12,17 +12,21 @@ Plus middleware that enforces authentication on all non-exempt routes.
 import json
 import logging
 import secrets
+import time
 import urllib.parse
 from typing import Optional
 
 import httpx
 from authlib.jose import jwt, JsonWebKey
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from itsdangerous import URLSafeTimedSerializer
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import config
+
+# JWKS and OIDC config cache TTL (seconds) — refresh after 24 hours
+_CACHE_TTL = 86400
 
 logger = logging.getLogger(__name__)
 
@@ -44,28 +48,34 @@ def _discovery_url() -> str:
 
 
 async def _get_oidc_config(request: Request) -> dict:
-    """Fetch and cache the OIDC discovery document."""
+    """Fetch and cache the OIDC discovery document (TTL-based)."""
     cache = request.app.state.oidc_config_cache
-    if cache:
+    if cache and (time.monotonic() - cache["_fetched_at"]) < _CACHE_TTL:
         return cache
     async with httpx.AsyncClient() as client:
         resp = await client.get(_discovery_url())
         resp.raise_for_status()
         data = resp.json()
+        data["_fetched_at"] = time.monotonic()
         request.app.state.oidc_config_cache = data
         return data
 
 
-async def _get_jwks(request: Request) -> dict:
-    """Fetch and cache the JWKS from the OIDC provider."""
+async def _get_jwks(request: Request, force_refresh: bool = False) -> dict:
+    """Fetch and cache the JWKS from the OIDC provider (TTL-based)."""
     cache = request.app.state.jwks_cache
-    if cache:
+    if (
+        not force_refresh
+        and cache
+        and (time.monotonic() - cache.get("_fetched_at", 0)) < _CACHE_TTL
+    ):
         return cache
     oidc_cfg = await _get_oidc_config(request)
     async with httpx.AsyncClient() as client:
         resp = await client.get(oidc_cfg["jwks_uri"])
         resp.raise_for_status()
         data = resp.json()
+        data["_fetched_at"] = time.monotonic()
         request.app.state.jwks_cache = data
         return data
 
@@ -204,7 +214,8 @@ async def callback(request: Request):
     if not id_token:
         return JSONResponse({"error": "no_id_token"}, status_code=403)
 
-    # Validate the ID token
+    # Validate the ID token (retry once with refreshed JWKS on failure,
+    # handles key rotation)
     try:
         jwks = await _get_jwks(request)
         claims = jwt.decode(
@@ -212,9 +223,18 @@ async def callback(request: Request):
             JsonWebKey.import_key_set(jwks),
         )
         claims.validate()
-    except Exception as e:
-        logger.error("ID token validation failed: %s", e)
-        return JSONResponse({"error": "invalid_token"}, status_code=403)
+    except Exception:
+        try:
+            logger.info("Token validation failed, refreshing JWKS and retrying")
+            jwks = await _get_jwks(request, force_refresh=True)
+            claims = jwt.decode(
+                id_token,
+                JsonWebKey.import_key_set(jwks),
+            )
+            claims.validate()
+        except Exception as e:
+            logger.error("ID token validation failed after JWKS refresh: %s", e)
+            return JSONResponse({"error": "invalid_token"}, status_code=403)
 
     # Extract user info
     user_name = claims.get("name", "Unknown")
@@ -223,7 +243,6 @@ async def callback(request: Request):
 
     # Check group membership
     user_groups = claims.get("groups", [])
-
     # If groups claim is missing (user in too many groups), fall back to Graph API
     if not user_groups and access_token and config.OIDC_ALLOWED_GROUP_IDS:
         user_groups = await _fetch_user_groups(access_token)
@@ -269,22 +288,28 @@ async def callback(request: Request):
 
 
 async def _fetch_user_groups(access_token: str) -> list[str]:
-    """Fetch user group IDs from Microsoft Graph when the groups claim overflows."""
+    """Check which allowed groups the user belongs to via Graph API.
+
+    Uses the checkMemberGroups endpoint which handles transitive membership
+    (nested groups) and avoids pagination issues with /me/memberOf.
+    """
+    if not config.OIDC_ALLOWED_GROUP_IDS:
+        return []
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                "https://graph.microsoft.com/v1.0/me/memberOf",
-                headers={"Authorization": f"Bearer {access_token}"},
+            resp = await client.post(
+                "https://graph.microsoft.com/v1.0/me/checkMemberGroups",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json={"groupIds": config.OIDC_ALLOWED_GROUP_IDS},
             )
             if resp.status_code == 200:
-                data = resp.json()
-                return [
-                    entry["id"]
-                    for entry in data.get("value", [])
-                    if entry.get("@odata.type") == "#microsoft.graph.group"
-                ]
+                return resp.json().get("value", [])
+            logger.error("checkMemberGroups returned %s: %s", resp.status_code, resp.text)
     except Exception as e:
-        logger.error("Failed to fetch user groups from Graph API: %s", e)
+        logger.error("Failed to check group membership via Graph API: %s", e)
     return []
 
 
@@ -309,10 +334,11 @@ async def logout(request: Request):
 
     # If OIDC is configured, redirect through Entra ID logout
     if config.OIDC_TENANT_ID:
+        post_logout_uri = config.DASHBOARD_URL.rstrip("/") + "/"
         logout_url = (
             f"https://login.microsoftonline.com/{config.OIDC_TENANT_ID}"
             f"/oauth2/v2.0/logout?post_logout_redirect_uri="
-            f"{urllib.parse.quote('https://sharesentinel.uvu.edu/')}"
+            f"{urllib.parse.quote(post_logout_uri)}"
         )
         response = RedirectResponse(url=logout_url, status_code=302)
         response.delete_cookie(SESSION_COOKIE, path="/")

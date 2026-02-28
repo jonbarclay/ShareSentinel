@@ -111,6 +111,7 @@ def create_notification_dispatcher(config: Config) -> NotificationDispatcher:
                     from_address=config.email_from,
                     to_addresses=config.email_to,
                     use_tls=config.smtp_use_tls,
+                    dashboard_url=config.dashboard_url,
                 ))
                 logger.info("Email notifier configured (to=%s)", config.email_to)
             else:
@@ -220,7 +221,39 @@ async def main() -> None:
     asyncio.create_task(cleanup_stale_files(config.tmpfs_path))
 
     from app.remediation.poller import remediation_poller
-    asyncio.create_task(remediation_poller(db_pool, config, graph_auth))
+    asyncio.create_task(remediation_poller(db_pool, config, graph_auth, redis_conn))
+
+    # User notification poller
+    if config.user_notification_enabled:
+        # Build AI provider for user notifications (may differ from main provider)
+        notif_provider_name = config.user_notification_ai_provider or config.ai_provider
+        notif_config = Config.from_env()
+        notif_config.ai_provider = notif_provider_name
+        # Override model if specified
+        if config.user_notification_ai_model:
+            model_field = {
+                "anthropic": "anthropic_model",
+                "openai": "openai_model",
+                "gemini": "gemini_model",
+            }.get(notif_provider_name.lower())
+            if model_field:
+                setattr(notif_config, model_field, config.user_notification_ai_model)
+        user_notif_ai = create_ai_provider(notif_config)
+        logger.info(
+            "User notification AI provider: %s (%s)",
+            notif_provider_name, user_notif_ai.get_model_name(),
+        )
+
+        from app.notifications.user_notification_poller import user_notification_poller
+        asyncio.create_task(user_notification_poller(
+            redis_conn=redis_conn,
+            db_pool=db_pool,
+            config=config,
+            ai_provider=user_notif_ai,
+            graph_auth=graph_auth,
+        ))
+    else:
+        logger.info("User notifications disabled")
 
     # Graceful shutdown
     shutdown_event = asyncio.Event()

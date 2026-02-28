@@ -58,8 +58,18 @@ class Config:
     jira_project_key: str = ""
     jira_issue_type: str = "Task"
 
+    # Dashboard
+    dashboard_url: str = "https://sharesentinel.uvu.edu"
+
     # Security / remediation
     security_email: str = "security@uvu.edu"
+
+    # User notifications (post-disposition emails to file owners)
+    user_notification_enabled: bool = False
+    user_notification_override_email: str = ""
+    user_notification_bcc: str = ""
+    user_notification_ai_provider: str = ""
+    user_notification_ai_model: str = ""
 
     # User profiles
     user_profile_cache_days: int = 7
@@ -121,7 +131,13 @@ class Config:
             jira_api_token=os.environ.get("JIRA_API_TOKEN", ""),
             jira_project_key=os.environ.get("JIRA_PROJECT_KEY", ""),
             jira_issue_type=os.environ.get("JIRA_ISSUE_TYPE", "Task"),
+            dashboard_url=os.environ.get("DASHBOARD_URL", "https://sharesentinel.uvu.edu"),
             security_email=os.environ.get("SECURITY_EMAIL", "security@uvu.edu"),
+            user_notification_enabled=os.environ.get("USER_NOTIFICATION_ENABLED", "false").lower() == "true",
+            user_notification_override_email=os.environ.get("USER_NOTIFICATION_OVERRIDE_EMAIL", ""),
+            user_notification_bcc=os.environ.get("USER_NOTIFICATION_BCC", ""),
+            user_notification_ai_provider=os.environ.get("USER_NOTIFICATION_AI_PROVIDER", ""),
+            user_notification_ai_model=os.environ.get("USER_NOTIFICATION_AI_MODEL", ""),
             user_profile_cache_days=int(os.environ.get("USER_PROFILE_CACHE_DAYS", "7")),
             upn_domain=os.environ.get("UPN_DOMAIN", "uvu.edu"),
             second_look_enabled=os.environ.get("SECOND_LOOK_ENABLED", "false").lower() == "true",

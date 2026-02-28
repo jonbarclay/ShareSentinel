@@ -1,12 +1,17 @@
 """Dashboard configuration from environment variables."""
 
+import logging
 import os
+import sys
+
+logger = logging.getLogger(__name__)
 
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://sharesentinel:devpassword123@localhost:5432/sharesentinel",
-)
+# --- Database ---
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+if not DATABASE_URL:
+    logger.critical("DATABASE_URL environment variable is required but not set")
+    sys.exit(1)
 
 ALLOWED_ORIGINS = [
     origin.strip() for origin in os.environ.get(
@@ -31,13 +36,45 @@ OIDC_ALLOWED_GROUP_IDS: list[str] = [
 ]
 
 # --- Session ---
-SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY", "change-me-in-production")
+SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY", "")
 SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", "28800"))  # 8 hours
 
 # --- Redis ---
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 SESSION_REDIS_DB = int(os.environ.get("SESSION_REDIS_DB", "1"))
 
+# --- Microsoft Graph API (for SharePoint site search) ---
+AZURE_TENANT_ID = os.environ.get("AZURE_TENANT_ID", "")
+AZURE_CLIENT_ID = os.environ.get("AZURE_CLIENT_ID", "")
+AZURE_CERTIFICATE = os.environ.get("AZURE_CERTIFICATE", "")
+AZURE_CERTIFICATE_PASS = os.environ.get("AZURE_CERTIFICATE_PASS", "")
+
+# --- Dashboard URL (used for logout redirect, etc.) ---
+DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "https://sharesentinel.uvu.edu")
+
 # --- Auth feature toggle ---
-# SSO is enabled when OIDC_CLIENT_ID is configured
-AUTH_ENABLED = bool(OIDC_CLIENT_ID)
+# Auth is enabled by default. Set AUTH_DISABLED=true to explicitly disable.
+_auth_disabled_explicit = os.environ.get("AUTH_DISABLED", "").lower() == "true"
+
+if _auth_disabled_explicit:
+    AUTH_ENABLED = False
+    logger.warning(
+        "*** AUTHENTICATION IS DISABLED (AUTH_DISABLED=true) — "
+        "all endpoints are publicly accessible ***"
+    )
+elif OIDC_CLIENT_ID:
+    AUTH_ENABLED = True
+    # Validate session secret when auth is enabled
+    if not SESSION_SECRET_KEY:
+        logger.critical(
+            "SESSION_SECRET_KEY environment variable is required when "
+            "authentication is enabled. Set a strong random secret."
+        )
+        sys.exit(1)
+else:
+    logger.critical(
+        "OIDC_CLIENT_ID is not configured and AUTH_DISABLED is not set to 'true'. "
+        "Either configure OIDC for authentication or explicitly set "
+        "AUTH_DISABLED=true to run without authentication."
+    )
+    sys.exit(1)

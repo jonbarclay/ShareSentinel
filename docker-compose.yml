@@ -8,7 +8,7 @@ services:
       - /tmp/sharesentinel:size=256M,mode=1777
     environment:
       # Redis
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
 
       # Database
       - DATABASE_URL=postgresql://${POSTGRES_USER:-sharesentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharesentinel}
@@ -57,6 +57,13 @@ services:
 
       # Security / remediation
       - SECURITY_EMAIL=${SECURITY_EMAIL:-security@uvu.edu}
+
+      # User notifications (post-disposition emails to file owners)
+      - USER_NOTIFICATION_ENABLED=${USER_NOTIFICATION_ENABLED:-false}
+      - USER_NOTIFICATION_OVERRIDE_EMAIL=${USER_NOTIFICATION_OVERRIDE_EMAIL:-}
+      - USER_NOTIFICATION_BCC=${USER_NOTIFICATION_BCC:-}
+      - USER_NOTIFICATION_AI_PROVIDER=${USER_NOTIFICATION_AI_PROVIDER:-}
+      - USER_NOTIFICATION_AI_MODEL=${USER_NOTIFICATION_AI_MODEL:-}
 
       # Jira (Phase 2)
       - JIRA_URL=${JIRA_URL}
@@ -118,7 +125,13 @@ services:
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-sharesentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharesentinel}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-https://sharesentinel.uvu.edu}
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+
+      # Microsoft Graph API (site search for allowlist)
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_CERTIFICATE=/app/certs/JonPnPCert.pfx
+      - AZURE_CERTIFICATE_PASS=${AZURE_CERTIFICATE_PASS}
 
       # Entra ID SSO (OpenID Connect)
       - OIDC_TENANT_ID=${OIDC_TENANT_ID}
@@ -127,6 +140,10 @@ services:
       - OIDC_REDIRECT_URI=${OIDC_REDIRECT_URI:-https://sharesentinel.uvu.edu/api/auth/callback}
       - OIDC_ALLOWED_GROUP_IDS=${OIDC_ALLOWED_GROUP_IDS}
       - SESSION_SECRET_KEY=${SESSION_SECRET_KEY}
+      - AUTH_DISABLED=${AUTH_DISABLED:-}
+      - DASHBOARD_URL=${DASHBOARD_URL:-https://sharesentinel.uvu.edu}
+    volumes:
+      - ${AZURE_CERTIFICATE:-./JonPnPCert.pfx}:/app/certs/JonPnPCert.pfx:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -157,7 +174,7 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-sharesentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharesentinel}
 
       # Redis (audit log poller)
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
 
       # Microsoft Graph API
       - AZURE_TENANT_ID=${AZURE_TENANT_ID}
@@ -181,6 +198,13 @@ services:
       # Audit log polling
       - AUDIT_POLL_ENABLED=${AUDIT_POLL_ENABLED:-true}
       - AUDIT_POLL_INTERVAL_MINUTES=${AUDIT_POLL_INTERVAL_MINUTES:-15}
+
+      # Allowlist enforcement
+      - ALLOWLIST_ENFORCEMENT_ENABLED=${ALLOWLIST_ENFORCEMENT_ENABLED:-false}
+      - ALLOWLIST_ENFORCEMENT_INTERVAL_HOURS=${ALLOWLIST_ENFORCEMENT_INTERVAL_HOURS:-168}
+      - ALLOWLIST_ENABLED_CAPABILITY=${ALLOWLIST_ENABLED_CAPABILITY:-ExternalUserAndGuestSharing}
+      - ALLOWLIST_DISABLED_CAPABILITY=${ALLOWLIST_DISABLED_CAPABILITY:-ExternalUserSharingOnly}
+      - SHAREPOINT_ADMIN_URL=${SHAREPOINT_ADMIN_URL}
 
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -206,14 +230,14 @@ services:
   redis:
     image: redis:7-alpine
     container_name: sharesentinel-redis
-    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
     volumes:
       - redis_data:/data
     restart: unless-stopped
     networks:
       - sharesentinel
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5

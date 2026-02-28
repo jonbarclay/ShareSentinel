@@ -68,9 +68,14 @@ class FileDownloader:
                 reason="missing_identifiers",
             )
 
+        # Sanitize file_name — strip path separators and traversal sequences
+        safe_name = Path(file_name).name.replace("\x00", "")
+        if not safe_name or safe_name in (".", ".."):
+            safe_name = f"download_{item_id}"
+
         # Build destination path: /tmp/sharesentinel/{event_id}/{file_name}
         event_dir = Path(config.tmpfs_path) / event_id
-        dest_path = event_dir / file_name
+        dest_path = event_dir / safe_name
 
         logger.info(
             "Downloading file event_id=%s drive=%s item=%s -> %s",

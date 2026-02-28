@@ -49,6 +49,7 @@ class EmailNotifier(BaseNotifier):
         use_tls: bool = True,
         template_dir: Optional[Path] = None,
         template_name: Optional[str] = None,
+        dashboard_url: str = "https://sharesentinel.uvu.edu",
     ):
         self.smtp_host = smtp_host
         self.smtp_port = smtp_port
@@ -57,6 +58,7 @@ class EmailNotifier(BaseNotifier):
         self.from_address = from_address
         self.to_addresses = to_addresses
         self.use_tls = use_tls
+        self.dashboard_url = dashboard_url.rstrip("/")
 
         self._template_dir = template_dir or _DEFAULT_TEMPLATE_DIR
         self._template_name = template_name or _DEFAULT_TEMPLATE_NAME
@@ -129,8 +131,7 @@ class EmailNotifier(BaseNotifier):
     # Plain-text fallback
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _build_plain_text(payload: AlertPayload) -> str:
+    def _build_plain_text(self, payload: AlertPayload) -> str:
         """Build a plain-text fallback version of the alert email."""
         lines: List[str] = []
         lines.append("=" * 60)
@@ -239,6 +240,10 @@ class EmailNotifier(BaseNotifier):
             )
         lines.append("")
 
+        # Dashboard link
+        lines.append(f"View in ShareSentinel: {self.dashboard_url}/events/{payload.event_id}")
+        lines.append("")
+
         # Footer
         lines.append("-" * 60)
         lines.append(f"Event ID: {payload.event_id}")
@@ -252,7 +257,9 @@ class EmailNotifier(BaseNotifier):
 
     def _render_html(self, payload: AlertPayload) -> str:
         """Render the Jinja2 HTML template with payload data."""
-        return self._template.render(**asdict(payload))
+        context = asdict(payload)
+        context["dashboard_url"] = self.dashboard_url
+        return self._template.render(**context)
 
     # ------------------------------------------------------------------
     # SMTP sending

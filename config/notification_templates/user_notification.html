@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShareSentinel - File Sharing Notification</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f5f7;font-family:Segoe UI,Roboto,Helvetica Neue,Arial,sans-serif;color:#172b4d;font-size:14px;line-height:1.5;">
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f5f7;">
+<tr><td align="center" style="padding:24px 16px;">
+
+<!-- Main card -->
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.12);">
+
+<!-- ============================================================ -->
+<!-- Banner                                                        -->
+<!-- ============================================================ -->
+{% if disposition == 'true_positive' %}
+<tr><td style="background-color:#de350b;padding:20px 24px;color:#ffffff;">
+  <h1 style="margin:0;font-size:20px;font-weight:600;">Sharing Link Removed</h1>
+  <p style="margin:6px 0 0;font-size:14px;opacity:0.9;">A sharing link on your file has been removed due to sensitive content</p>
+</td></tr>
+{% else %}
+<tr><td style="background-color:#ff991f;padding:20px 24px;color:#172b4d;">
+  <h1 style="margin:0;font-size:20px;font-weight:600;">Action Requested: Please Review Your Shared File</h1>
+  <p style="margin:6px 0 0;font-size:14px;opacity:0.85;">Your file has been flagged as potentially containing sensitive content</p>
+</td></tr>
+{% endif %}
+
+<!-- Content area -->
+<tr><td style="padding:24px;">
+
+<!-- ============================================================ -->
+<!-- AI-generated body                                             -->
+<!-- ============================================================ -->
+<div style="margin-bottom:20px;">
+{{ ai_generated_body|safe }}
+</div>
+
+<!-- ============================================================ -->
+<!-- File Details                                                   -->
+<!-- ============================================================ -->
+<h2 style="margin:0 0 12px;font-size:16px;font-weight:600;color:#172b4d;border-bottom:1px solid #dfe1e6;padding-bottom:8px;">File Details</h2>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;width:120px;vertical-align:top;">Name</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ file_name }}</td>
+  </tr>
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Path</td>
+    <td style="padding:4px 0;color:#172b4d;word-break:break-all;">{{ file_path }}</td>
+  </tr>
+  <tr>
+    <td style="padding:4px 8px 4px 0;font-weight:600;color:#6b778c;vertical-align:top;">Sharing Type</td>
+    <td style="padding:4px 0;color:#172b4d;">{{ sharing_type }}</td>
+  </tr>
+</table>
+
+<!-- ============================================================ -->
+<!-- Detected Categories                                           -->
+<!-- ============================================================ -->
+{% if category_labels %}
+<h2 style="margin:0 0 12px;font-size:16px;font-weight:600;color:#172b4d;border-bottom:1px solid #dfe1e6;padding-bottom:8px;">Detected Sensitivity Categories</h2>
+<div style="margin-bottom:20px;">
+  {% for label in category_labels %}
+  <span style="display:inline-block;background-color:{% if disposition == 'true_positive' %}#ffebe6;color:#de350b;{% else %}#fff3e0;color:#ff8b00;{% endif %}padding:4px 12px;border-radius:12px;font-size:13px;font-weight:600;margin:2px 4px 2px 0;">{{ label }}</span>
+  {% endfor %}
+</div>
+{% endif %}
+
+</td></tr>
+
+<!-- ============================================================ -->
+<!-- Footer                                                        -->
+<!-- ============================================================ -->
+<tr><td style="padding:16px 24px;background-color:#f4f5f7;border-top:1px solid #dfe1e6;font-size:12px;color:#6b778c;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td style="padding:2px 0;">Event Reference: {{ event_id }}</td>
+    </tr>
+    <tr>
+      <td style="padding:2px 0;">Questions? Contact <a href="mailto:security@uvu.edu" style="color:#0052cc;">security@uvu.edu</a></td>
+    </tr>
+  </table>
+  <p style="margin:10px 0 0;font-size:11px;color:#97a0af;">This is an automated notification from ShareSentinel. Do not reply to this email.</p>
+</td></tr>
+
+</table>
+<!-- End main card -->
+
+</td></tr>
+</table>
+
+</body>
+</html>
