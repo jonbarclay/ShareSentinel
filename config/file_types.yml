@@ -117,3 +117,9 @@ sensitivity_keywords:
   - "kubeconfig"
   - "connection.?string"
   - "api.?key"
+
+delegated_content_extensions:
+  - .loop
+  - .fluid
+  - .one
+  - .whiteboard

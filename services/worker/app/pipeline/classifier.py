@@ -27,6 +27,7 @@ class Category(str, Enum):
     OVERSIZED = "oversized"
     FOLDER = "folder"
     UNKNOWN = "unknown"
+    DELEGATED_CONTENT = "delegated_content"
 
 
 class Action(str, Enum):
@@ -37,6 +38,7 @@ class Action(str, Enum):
     ARCHIVE_MANIFEST = "archive_manifest"
     MULTIMODAL = "multimodal"
     FOLDER_FLAG = "folder_flag"
+    PENDING_MANUAL = "pending_manual"
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,7 @@ class FileClassifier:
         self._images: set[str] = set(data.get("image_extensions", []))
         # text_extractable_extensions is a dict: ext -> extractor name
         self._text_extractable: dict[str, str] = data.get("text_extractable_extensions", {})
+        self._delegated: set[str] = set(data.get("delegated_content_extensions", []))
 
     def classify(
         self,
@@ -107,6 +110,14 @@ class FileClassifier:
 
         # Get the extension (lowercase, with leading dot)
         ext = self._get_extension(file_name)
+
+        # Delegated content check (Loop, OneNote, Whiteboard)
+        if ext and ext in self._delegated:
+            return ClassificationResult(
+                category=Category.DELEGATED_CONTENT,
+                action=Action.PENDING_MANUAL,
+                reason=f"Extension {ext} requires delegated auth for content inspection.",
+            )
 
         # No extension -> filename-only analysis
         if not ext:
@@ -170,6 +181,29 @@ class FileClassifier:
             action=Action.FILENAME_ONLY,
             reason=f"Extension {ext} is not in any known category.",
         )
+
+    def classify_with_metadata(
+        self,
+        file_name: str,
+        item_type: str,
+        file_size: int,
+        config: Config,
+        metadata: dict | None = None,
+    ) -> ClassificationResult:
+        """Classify with optional Graph API metadata for package-type detection.
+
+        If metadata contains a ``package`` facet (OneNote, Whiteboard), classify
+        as delegated content regardless of extension.
+        """
+        if metadata:
+            package_type = (metadata.get("package") or {}).get("type", "").lower()
+            if package_type in ("onenote", "whiteboard", "loop"):
+                return ClassificationResult(
+                    category=Category.DELEGATED_CONTENT,
+                    action=Action.PENDING_MANUAL,
+                    reason=f"Graph metadata package.type={package_type} requires delegated auth.",
+                )
+        return self.classify(file_name, item_type, file_size, config)
 
     @staticmethod
     def _get_extension(file_name: str) -> str:
