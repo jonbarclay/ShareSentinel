@@ -146,7 +146,19 @@ services:
       - SESSION_SECRET_KEY=${SESSION_SECRET_KEY}
       - AUTH_DISABLED=${AUTH_DISABLED:-}
       - DASHBOARD_URL=${DASHBOARD_URL:-https://sharesentinel.uvu.edu}
+
+      # AI Provider (for content inspection)
+      - AI_PROVIDER=${AI_PROVIDER:-anthropic}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-4-5-20250929}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
+      - AI_MAX_TOKENS=${AI_MAX_TOKENS:-1024}
+      - TEXT_CONTENT_LIMIT=${TEXT_CONTENT_LIMIT:-100000}
     volumes:
+      - ./config:/app/config:ro
       - ${AZURE_CERTIFICATE:-./JonPnPCert.pfx}:/app/certs/JonPnPCert.pfx:ro
     depends_on:
       postgres:
