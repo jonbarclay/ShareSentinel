@@ -5,6 +5,7 @@ import EventList from "./pages/EventList";
 import EventDetail from "./pages/EventDetail";
 import Statistics from "./pages/Statistics";
 import AllowList from "./pages/AllowList";
+import InspectionQueue from "./pages/InspectionQueue";
 import "./App.css";
 
 function Nav() {
@@ -28,6 +29,9 @@ function Nav() {
           </NavLink>
           <NavLink to="/allowlist" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
             Allow List
+          </NavLink>
+          <NavLink to="/inspect" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            Inspect
           </NavLink>
         </div>
         {user && (
@@ -55,6 +59,7 @@ export default function App() {
             <Route path="/events/:eventId" element={<EventDetail />} />
             <Route path="/statistics" element={<Statistics />} />
             <Route path="/allowlist" element={<AllowList />} />
+            <Route path="/inspect" element={<InspectionQueue />} />
           </Routes>
         </main>
       </div>
