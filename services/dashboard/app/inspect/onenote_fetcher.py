@@ -1,4 +1,8 @@
-"""Fetch OneNote notebook page content via Graph API (delegated)."""
+"""Fetch OneNote notebook page content via Graph API (delegated).
+
+Scoped to the specific shared notebook identified by its driveItem ID,
+rather than enumerating all of a user's notebooks.
+"""
 
 import logging
 from typing import Optional
@@ -47,55 +51,108 @@ def _html_to_text(html: str) -> str:
 
 
 async def fetch_onenote_content(
+    drive_id: str,
     item_id: str,
     user_id: str,
     access_token: str,
     site_url: str | None = None,
 ) -> Optional[str]:
-    """Fetch all page content from a OneNote notebook.
+    """Fetch page content from a specific shared OneNote notebook.
 
-    Enumerates sections and pages, then fetches each page's HTML content.
-    Concatenates all page text up to MAX_CONTENT_BYTES.
+    Uses the driveItem ID to resolve the notebook, then enumerates only
+    that notebook's sections and pages. Returns None if the notebook
+    cannot be identified (fail-safe).
     """
     headers = {"Authorization": f"Bearer {access_token}"}
 
-    notebooks = await _find_notebooks(user_id, headers)
-    if not notebooks:
-        logger.warning("No notebooks found for user %s", user_id)
+    # Step 1: Resolve the driveItem to get notebook metadata
+    notebook_name = await _resolve_notebook_name(drive_id, item_id, headers)
+    if not notebook_name:
+        logger.warning(
+            "Could not resolve OneNote notebook from drive_id=%s item_id=%s",
+            drive_id, item_id,
+        )
         return None
+
+    # Step 2: Find the matching notebook via OneNote API
+    notebook = await _find_notebook_by_name(user_id, notebook_name, headers)
+    if not notebook:
+        logger.warning(
+            "No matching OneNote notebook found for name '%s' (user %s)",
+            notebook_name, user_id,
+        )
+        return None
+
+    # Step 3: Enumerate only this notebook's sections and pages
+    notebook_id = notebook["id"]
+    sections = await _get_sections(notebook_id, headers, user_id)
 
     all_text: list[str] = []
     total_bytes = 0
 
-    for notebook in notebooks:
-        notebook_id = notebook["id"]
-        sections = await _get_sections(notebook_id, headers, user_id)
+    for section in sections:
+        pages = await _get_pages(section["id"], headers, user_id)
 
-        for section in sections:
-            pages = await _get_pages(section["id"], headers, user_id)
-
-            for page in pages[:MAX_PAGES]:
-                page_html = await _get_page_content(page["id"], headers, user_id)
-                if page_html:
-                    page_text = _html_to_text(page_html)
-                    if page_text:
-                        all_text.append(f"--- Page: {page.get('title', 'Untitled')} ---\n{page_text}")
-                        total_bytes += len(page_text.encode("utf-8"))
-                        if total_bytes >= MAX_CONTENT_BYTES:
-                            logger.info("OneNote content limit reached (%d bytes)", total_bytes)
-                            return "\n\n".join(all_text)
+        for page in pages[:MAX_PAGES]:
+            page_html = await _get_page_content(page["id"], headers, user_id)
+            if page_html:
+                page_text = _html_to_text(page_html)
+                if page_text:
+                    all_text.append(f"--- Page: {page.get('title', 'Untitled')} ---\n{page_text}")
+                    total_bytes += len(page_text.encode("utf-8"))
+                    if total_bytes >= MAX_CONTENT_BYTES:
+                        logger.info("OneNote content limit reached (%d bytes)", total_bytes)
+                        return "\n\n".join(all_text)
 
     return "\n\n".join(all_text) if all_text else None
 
 
-async def _find_notebooks(user_id: str, headers: dict) -> list[dict]:
-    url = f"{GRAPH_BASE}/users/{user_id}/onenote/notebooks?$top=10"
+async def _resolve_notebook_name(
+    drive_id: str, item_id: str, headers: dict
+) -> Optional[str]:
+    """Get the notebook name from its driveItem metadata.
+
+    Checks that the item is a OneNote package and returns its display name.
+    """
+    url = f"{GRAPH_BASE}/drives/{drive_id}/items/{item_id}"
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         resp = await client.get(url, headers=headers)
         if resp.status_code != 200:
-            logger.error("Failed to list notebooks: HTTP %d", resp.status_code)
-            return []
-        return resp.json().get("value", [])
+            logger.error(
+                "Failed to get driveItem metadata: HTTP %d (drive=%s, item=%s)",
+                resp.status_code, drive_id, item_id,
+            )
+            return None
+        data = resp.json()
+        # OneNote notebooks have package.type == "oneNote"
+        package = data.get("package", {})
+        if package.get("type") != "oneNote":
+            logger.warning(
+                "DriveItem %s is not a OneNote package (package=%s)",
+                item_id, package,
+            )
+            return None
+        return data.get("name")
+
+
+async def _find_notebook_by_name(
+    user_id: str, name: str, headers: dict
+) -> Optional[dict]:
+    """Find a specific notebook by display name via the OneNote API."""
+    # OData filter on displayName
+    safe_name = name.replace("'", "''")
+    url = (
+        f"{GRAPH_BASE}/users/{user_id}/onenote/notebooks"
+        f"?$filter=displayName eq '{safe_name}'"
+        f"&$top=1"
+    )
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        resp = await client.get(url, headers=headers)
+        if resp.status_code != 200:
+            logger.error("Failed to search notebooks by name: HTTP %d", resp.status_code)
+            return None
+        notebooks = resp.json().get("value", [])
+        return notebooks[0] if notebooks else None
 
 
 async def _get_sections(notebook_id: str, headers: dict, user_id: str) -> list[dict]:

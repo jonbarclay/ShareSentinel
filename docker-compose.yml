@@ -124,6 +124,8 @@ services:
       context: ./services/dashboard
       dockerfile: Dockerfile
     container_name: sharesentinel-dashboard
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=100m
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-sharesentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharesentinel}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-https://sharesentinel.uvu.edu}

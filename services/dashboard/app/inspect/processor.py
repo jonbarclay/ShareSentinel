@@ -34,7 +34,7 @@ async def process_inspection_item(
     content_type = event.get("content_type", "unknown")
     file_name = event.get("file_name", "unknown")
     drive_id = event.get("drive_id")
-    item_id = event.get("item_id")
+    item_id = event.get("item_id_graph")
     user_id = event.get("user_id")
     site_url = event.get("site_url")
 
@@ -46,7 +46,7 @@ async def process_inspection_item(
             )
         elif content_type == "onenote":
             return await _process_onenote(
-                event_id, item_id, user_id, site_url, file_name,
+                event_id, drive_id, item_id, user_id, site_url, file_name,
                 access_token, db_pool, ai_config,
             )
         elif content_type == "whiteboard":
@@ -97,6 +97,7 @@ async def _process_loop(
 
 async def _process_onenote(
     event_id: str,
+    drive_id: str,
     item_id: str,
     user_id: str,
     site_url: Optional[str],
@@ -108,7 +109,7 @@ async def _process_onenote(
     """Fetch OneNote content and analyze as text."""
     from .onenote_fetcher import fetch_onenote_content
 
-    content = await fetch_onenote_content(item_id, user_id, access_token, site_url)
+    content = await fetch_onenote_content(drive_id, item_id, user_id, access_token, site_url)
     if not content:
         reason = "Failed to fetch OneNote content (empty or error)"
         await _mark_inspection_failed(event_id, db_pool, reason)

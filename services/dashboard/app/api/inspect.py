@@ -77,7 +77,7 @@ async def list_pending(request: Request):
         rows = await conn.fetch(
             """
             SELECT e.event_id, e.file_name, e.content_type,
-                   e.user_id, e.site_url, e.drive_id, e.item_id,
+                   e.user_id, e.site_url, e.drive_id, e.item_id_graph,
                    e.received_at, e.sharing_type,
                    up.display_name AS user_display_name
             FROM events e
@@ -149,6 +149,7 @@ async def process_batch(request: Request, body: Optional[ProcessRequest] = None)
                 SELECT * FROM events
                 WHERE status = 'pending_manual_inspection'
                 ORDER BY received_at ASC
+                LIMIT 10
                 """
             )
 
@@ -161,6 +162,17 @@ async def process_batch(request: Request, body: Optional[ProcessRequest] = None)
 
     for row in rows:
         event = dict(row)
+        # Refresh token before each item to avoid expiry during long batches
+        token = await get_graph_token(request)
+        if not token:
+            results.append({
+                "event_id": event["event_id"],
+                "file_name": event.get("file_name"),
+                "status": "failed",
+                "reason": "Graph API token expired mid-batch",
+            })
+            failed += 1
+            continue
         result = await process_inspection_item(event, token, pool, ai_config)
         results.append({
             "event_id": event["event_id"],
