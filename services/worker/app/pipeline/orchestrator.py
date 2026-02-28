@@ -320,7 +320,7 @@ async def _process_single_file(
                 ".loop": "loop", ".fluid": "loop",
                 ".one": "onenote", ".whiteboard": "whiteboard",
             }
-            ext = ("." + file_name.rsplit(".", 1)[-1]).lower() if "." in file_name else ""
+            ext = FileClassifier._get_extension(file_name)
             ct = content_type_map.get(ext, "delegated")
             # Check metadata package facet as fallback
             pkg = (metadata.get("package") or {}).get("type", "").lower()
@@ -549,12 +549,47 @@ async def _handle_folder_share(
     folder_name = folder_meta.get("name", getattr(job, "file_name", ""))
     folder_web_url = folder_meta.get("webUrl", "")
 
-    # Persist Graph metadata on the event row (folder path skips metadata pre-screen)
+    # Fetch sharing permissions for the folder (same as metadata pre-screen does for files)
+    sharing_link_url = None
+    sharing_links = None
+    if drive_id and folder_item_id:
+        try:
+            from ..graph_api.sharing import get_sharing_permissions, extract_sharing_link, extract_all_sharing_links
+            permissions = await get_sharing_permissions(
+                auth=graph_client._auth,
+                drive_id=drive_id,
+                item_id=folder_item_id,
+            )
+            sharing_link_url = extract_sharing_link(permissions)
+            sharing_links = extract_all_sharing_links(permissions)
+        except Exception:
+            logger.warning("[%s] Failed to fetch folder sharing permissions", event_id, exc_info=True)
+
+        # Enroll sharing links into lifecycle tracking
+        if sharing_links:
+            try:
+                from ..lifecycle.enrollment import enroll_sharing_links
+                await enroll_sharing_links(
+                    db_pool=db_pool,
+                    permissions=permissions,
+                    event_id=event_id,
+                    user_id=getattr(job, "user_id", ""),
+                    drive_id=drive_id,
+                    item_id=folder_item_id,
+                    file_name=folder_name,
+                    event_time=getattr(job, "event_time", None),
+                )
+            except Exception:
+                logger.warning("[%s] Folder lifecycle enrollment failed", event_id, exc_info=True)
+
+    # Persist Graph metadata on the event row
     await event_repo.update_event_metadata(event_id, {
         "confirmed_file_name": folder_name,
         "web_url": folder_web_url,
         "drive_id": drive_id,
         "item_id_graph": folder_item_id,
+        "sharing_link_url": sharing_link_url,
+        "sharing_links": sharing_links,
     })
 
     # ---- Step 2: Enumerate all files ----

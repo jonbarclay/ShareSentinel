@@ -7,8 +7,10 @@ RUN npm run build
 
 FROM python:3.12-slim
 WORKDIR /app
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && playwright install --with-deps chromium
 COPY app/ app/
 COPY --from=frontend-build /build/dist /app/frontend/dist
 RUN useradd -m -r appuser

@@ -39,9 +39,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "default-src 'self'; "
             "script-src 'self'; "
             "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; "
+            "img-src 'self' data: blob:; "
             "font-src 'self'; "
-            "connect-src 'self'; "
+            "connect-src 'self' ws: wss:; "
             "frame-ancestors 'none'; "
             "base-uri 'self'; "
             "form-action 'self' https://login.microsoftonline.com"
@@ -86,9 +86,22 @@ async def lifespan(app: FastAPI):
         app.state.session_redis = aioredis.from_url(redis_url, decode_responses=True)
         logger.info("Session Redis connected (DB %d)", SESSION_REDIS_DB)
 
+    from .inspect import browser_fetcher
+    browser_fetcher.set_redis(app.state.redis)
+
     yield
 
     # Cleanup
+    try:
+        from .inspect.browser_fetcher import close_browser
+        await close_browser()
+    except Exception:
+        pass
+    try:
+        from .inspect import browser_auth
+        await browser_auth.close_session(app.state.redis)
+    except Exception:
+        pass
     await app.state.db.close()
     await app.state.redis.aclose()
     if app.state.session_redis is not None:

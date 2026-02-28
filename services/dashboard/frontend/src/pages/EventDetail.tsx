@@ -282,7 +282,15 @@ export default function EventDetail() {
           <Field label="Event ID" value={e.event_id} />
           <Field label="File Name" value={e.file_name} />
           <UserProfileCard profile={data.user_profile} userId={String(e.user_id)} />
-          <Field label="Object ID" value={e.object_id} />
+          <div style={{ marginBottom: 8 }}>
+            <span style={labelCss}>Object ID</span>
+            <div style={{ fontSize: "0.9rem", color: uvu.text, marginTop: 1, wordBreak: "break-all" }}>
+              {e.object_id && String(e.object_id).startsWith("http") ? (
+                <a href={String(e.object_id)} target="_blank" rel="noopener noreferrer"
+                  style={{ color: uvu.greenL1 }}>{String(e.object_id)}</a>
+              ) : String(e.object_id ?? "—")}
+            </div>
+          </div>
           <Field label="Item Type" value={e.item_type} />
           <div style={{ marginBottom: 8 }}>
             <span style={labelCss}>Status</span>
@@ -309,28 +317,54 @@ export default function EventDetail() {
           {(() => {
             const raw = e.sharing_links;
             const links: Array<{url: string; label: string}> = Array.isArray(raw) ? raw : typeof raw === "string" ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : [];
-            return links.length > 0 ? (
-            <div style={{ marginTop: 10 }}>
-              <span style={labelCss}>Sharing Links</span>
-              <div style={{ marginTop: 6 }}>
-                {links.map((link, i) => (
-                  <div key={i} style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+            if (links.length > 0) {
+              return (
+                <div style={{ marginTop: 10 }}>
+                  <span style={labelCss}>Sharing Links</span>
+                  <div style={{ marginTop: 6 }}>
+                    {links.map((link, i) => (
+                      <div key={i} style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{
+                          display: "inline-block",
+                          background: link.label.startsWith("Anonymous") ? "#fce8e4" : uvu.seaHaze,
+                          color: link.label.startsWith("Anonymous") ? uvu.brick : uvu.greenD2,
+                          padding: "2px 8px",
+                          borderRadius: 4,
+                          fontSize: "0.72rem",
+                          fontWeight: 600,
+                        }}>{link.label}</span>
+                        <a href={link.url} target="_blank" rel="noopener noreferrer"
+                          style={{ color: uvu.greenL1, fontSize: "0.85rem", wordBreak: "break-all" }}>{link.url}</a>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            }
+            // Fallback: show sharing_link_url or object_id as the sharing link
+            const fallbackUrl = e.sharing_link_url || e.object_id;
+            if (fallbackUrl && String(fallbackUrl).startsWith("http")) {
+              const scope = e.sharing_type || e.sharing_scope || "Unknown";
+              return (
+                <div style={{ marginTop: 10 }}>
+                  <span style={labelCss}>Sharing Link</span>
+                  <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{
                       display: "inline-block",
-                      background: link.label.startsWith("Anonymous") ? "#fce8e4" : uvu.seaHaze,
-                      color: link.label.startsWith("Anonymous") ? uvu.brick : uvu.greenD2,
+                      background: uvu.seaHaze,
+                      color: uvu.greenD2,
                       padding: "2px 8px",
                       borderRadius: 4,
                       fontSize: "0.72rem",
                       fontWeight: 600,
-                    }}>{link.label}</span>
-                    <a href={link.url} target="_blank" rel="noopener noreferrer"
-                      style={{ color: uvu.greenL1, fontSize: "0.85rem", wordBreak: "break-all" }}>{link.url}</a>
+                    }}>{String(scope)}</span>
+                    <a href={String(fallbackUrl)} target="_blank" rel="noopener noreferrer"
+                      style={{ color: uvu.greenL1, fontSize: "0.85rem", wordBreak: "break-all" }}>{String(fallbackUrl)}</a>
                   </div>
-                ))}
-              </div>
-            </div>
-            ) : null;
+                </div>
+              );
+            }
+            return null;
           })()}
         </div>
 

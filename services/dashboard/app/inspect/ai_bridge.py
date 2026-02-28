@@ -2,6 +2,14 @@
 
 Provides a simplified AI analysis interface that loads the shared prompt
 template and calls Anthropic, OpenAI, or Gemini APIs based on configuration.
+
+NOTE: This module intentionally duplicates parts of the worker's AI provider
+abstraction (services/worker/app/ai/). Key differences from the worker:
+  - Simpler response parsing (no streaming, no retry with backoff)
+  - No per-request cost tracking or token counting
+  - Simplified escalation logic (tier determination only, no notification dispatch)
+  - Direct httpx calls instead of the worker's BaseAIProvider class hierarchy
+If you modify the prompt template or category tiers, update both locations.
 """
 
 import base64

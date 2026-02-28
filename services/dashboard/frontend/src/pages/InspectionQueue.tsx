@@ -1,5 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { apiFetch, apiPost } from "../api/client";
+import BrowserAuthModal from "../components/BrowserAuthModal";
+import "../components/BrowserAuthModal.css";
 import "./InspectionQueue.css";
 
 interface PendingItem {
@@ -19,21 +21,30 @@ interface PendingResponse {
   counts: Record<string, number>;
   total: number;
   items: PendingItem[];
-  has_graph_token: boolean;
+  has_browser_auth: boolean;
 }
 
 interface ProcessResult {
   event_id: string;
   file_name: string | null;
   status: string;
-  error?: string;
+  reason?: string;
 }
 
-interface ProcessResponse {
-  processed: number;
+interface BatchStartResponse {
+  batch_id: string | null;
+  total: number;
+  message: string;
+}
+
+interface BatchStatusResponse {
+  status: "processing" | "done" | "error";
+  total: number;
+  current: number;
   completed: number;
   failed: number;
   results: ProcessResult[];
+  error?: string;
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -47,8 +58,17 @@ export default function InspectionQueue() {
   const [data, setData] = useState<PendingResponse | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [processing, setProcessing] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<string | null>(null);
   const [results, setResults] = useState<ProcessResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [browserAuth, setBrowserAuth] = useState<{ authenticated: boolean; expires_in_seconds: number } | null>(null);
+
+  const fetchBrowserAuthStatus = useCallback(() => {
+    apiFetch<{ authenticated: boolean; expires_in_seconds: number }>("/inspect/browser-session/status")
+      .then(setBrowserAuth)
+      .catch(() => setBrowserAuth(null));
+  }, []);
 
   const fetchPending = useCallback(() => {
     apiFetch<PendingResponse>("/inspect/pending")
@@ -65,6 +85,10 @@ export default function InspectionQueue() {
   useEffect(() => {
     fetchPending();
   }, [fetchPending]);
+
+  useEffect(() => {
+    fetchBrowserAuthStatus();
+  }, [fetchBrowserAuthStatus]);
 
   function toggleSelect(eventId: string) {
     setSelected((prev) => {
@@ -87,21 +111,57 @@ export default function InspectionQueue() {
     }
   }
 
-  async function handleProcess(eventIds?: string[]) {
+  async function handleProcess(eventIds?: string[], processAll = false) {
     setProcessing(true);
     setResults(null);
     setError(null);
+    setBatchProgress(null);
     try {
-      const body = eventIds ? { event_ids: eventIds } : {};
-      const res = await apiPost<ProcessResponse>("/inspect/process", body);
-      setResults(res.results);
-      setSelected(new Set());
-      fetchPending();
+      const body = eventIds
+        ? { event_ids: eventIds }
+        : processAll
+          ? { process_all: true }
+          : {};
+      const startRes = await apiPost<BatchStartResponse>("/inspect/process", body);
+      if (!startRes.batch_id) {
+        setProcessing(false);
+        setBatchProgress(null);
+        return;
+      }
+      setBatchProgress(`Processing 0 of ${startRes.total}...`);
+
+      // Poll for progress
+      const batchId = startRes.batch_id;
+      let done = false;
+      while (!done) {
+        await new Promise((r) => setTimeout(r, 2000));
+        try {
+          const status = await apiFetch<BatchStatusResponse>(`/inspect/process/status/${batchId}`);
+          setBatchProgress(`Processing ${status.current} of ${status.total}... (${status.completed} completed, ${status.failed} failed)`);
+          if (status.status === "done" || status.status === "error") {
+            done = true;
+            setResults(status.results);
+            if (status.error) setError(status.error);
+            setSelected(new Set());
+            fetchPending();
+          }
+        } catch {
+          done = true;
+          setError("Lost connection to batch status");
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Processing failed");
     } finally {
       setProcessing(false);
+      setBatchProgress(null);
     }
+  }
+
+  function formatExpiry(seconds: number): string {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
   }
 
   function formatDate(iso: string | null) {
@@ -130,7 +190,7 @@ export default function InspectionQueue() {
   const items = data?.items ?? [];
   const counts = data?.counts ?? {};
   const total = data?.total ?? 0;
-  const hasToken = data?.has_graph_token ?? false;
+  const hasBrowserAuth = data?.has_browser_auth ?? false;
 
   return (
     <div className="inspection-queue">
@@ -154,10 +214,25 @@ export default function InspectionQueue() {
         </div>
       </div>
 
+      {/* Browser auth status */}
+      <div className={`browser-auth-indicator ${browserAuth?.authenticated ? "auth-active" : "auth-inactive"}`}>
+        <span className="browser-auth-indicator-text">
+          {browserAuth?.authenticated
+            ? `Browser authenticated — expires in ${formatExpiry(browserAuth.expires_in_seconds)}`
+            : "Browser not authenticated — org-wide links will show sign-in page"}
+        </span>
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={() => setAuthModalOpen(true)}
+        >
+          {browserAuth?.authenticated ? "Re-authenticate Browser" : "Authenticate Browser"}
+        </button>
+      </div>
+
       {/* Auth warning */}
-      {!hasToken && (
+      {!hasBrowserAuth && (
         <div className="inspection-warning">
-          Please log out and log back in to grant Graph API access. Processing requires delegated permissions.
+          Browser not authenticated. Click "Authenticate Browser" above to enable processing.
         </div>
       )}
 
@@ -173,20 +248,34 @@ export default function InspectionQueue() {
         <div className="inspection-actions">
           <button
             className="btn btn-primary"
-            onClick={() => handleProcess()}
-            disabled={processing || !hasToken}
+            onClick={() => handleProcess(undefined, true)}
+            disabled={processing || !hasBrowserAuth}
           >
-            {processing ? "Processing..." : "Process All"}
+            {processing ? "Processing..." : `Process All (${total})`}
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={() => handleProcess()}
+            disabled={processing || !hasBrowserAuth}
+          >
+            Process Next 10
           </button>
           {selected.size > 0 && (
             <button
               className="btn btn-secondary"
               onClick={() => handleProcess(Array.from(selected))}
-              disabled={processing || !hasToken}
+              disabled={processing || !hasBrowserAuth}
             >
               Process Selected ({selected.size})
             </button>
           )}
+        </div>
+      )}
+
+      {/* Batch progress */}
+      {batchProgress && (
+        <div className="batch-progress">
+          {batchProgress}
         </div>
       )}
 
@@ -200,9 +289,9 @@ export default function InspectionQueue() {
                 {r.status}
               </span>
               <span>{r.file_name || r.event_id}</span>
-              {r.error && (
+              {r.reason && (
                 <span style={{ color: "#dc3545", fontSize: "0.8rem" }}>
-                  {r.error}
+                  {r.reason}
                 </span>
               )}
             </div>
@@ -259,6 +348,15 @@ export default function InspectionQueue() {
           </table>
         </div>
       )}
+
+      <BrowserAuthModal
+        open={authModalOpen}
+        onClose={() => {
+          setAuthModalOpen(false);
+          fetchBrowserAuthStatus();
+        }}
+        onAuthComplete={fetchBrowserAuthStatus}
+      />
     </div>
   );
 }

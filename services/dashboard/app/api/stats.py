@@ -67,7 +67,8 @@ async def get_stats(request: Request):
                 COUNT(*) AS count
             FROM verdicts,
                  jsonb_array_elements(category_assessments) AS cat_elem
-            WHERE category_assessments != '[]'::jsonb
+            WHERE jsonb_typeof(category_assessments) = 'array'
+              AND category_assessments != '[]'::jsonb
             GROUP BY cat_elem->>'id'
             ORDER BY count DESC
         """)

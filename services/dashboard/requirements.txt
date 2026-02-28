@@ -9,3 +9,5 @@ redis[hiredis]>=5.0.0
 msal>=1.25.0
 cryptography>=42.0.0
 PyMuPDF
+Pillow>=10.0.0
+playwright>=1.49.0

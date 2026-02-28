@@ -21,8 +21,11 @@ async def get_graph_token(request: Request) -> Optional[str]:
     """Get a valid Graph API access token from the current session.
 
     Refreshes the token automatically if expired.
-    Returns None if no delegated session exists.
+    Returns None if no delegated session exists or auth is disabled.
     """
+    if not config.AUTH_ENABLED:
+        return None
+
     session_id = _get_current_session_id(request)
     if not session_id:
         return None

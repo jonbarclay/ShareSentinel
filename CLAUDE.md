@@ -11,11 +11,12 @@ The system polls the Microsoft Graph Audit Log Query API for sharing events, dow
 1. The audit log poller (in the lifecycle-cron container) queries the Microsoft Graph Audit Log Query API every 15 minutes for `AnonymousLinkCreated` and `CompanyLinkCreated` events.
 2. New events are deduplicated via Redis and pushed onto the Redis job queue.
 3. The worker picks up jobs (up to 5 concurrently), determines if the shared item is a file or folder.
-4. **Folders**: Immediately flag for analyst review (folders with broad sharing are inherently risky because future files added inherit the sharing scope).
+4. **Folders**: Enumerate folder contents via Graph API, download and analyze each child file individually, then flag the folder for analyst review (folders with broad sharing are inherently risky because future files added inherit the sharing scope).
 5. **Files**: Download via Graph API, preprocess (text extraction, OCR, image compression), send to AI for sensitivity analysis.
-6. If the AI detects Tier 1 or Tier 2 sensitivity categories (e.g., PII, FERPA, HIPAA), notify analysts with the file metadata and sharing link.
-7. Enroll each anonymous/org-wide sharing permission in the 180-day lifecycle tracker.
-8. Delete the temporary file after processing.
+6. **Delegated content types** (Loop, OneNote, Whiteboard): These cannot be fetched via the application-level Graph API. They are parked as `pending_manual_inspection` and processed via the dashboard's Inspection Queue, which uses Playwright browser screenshots of sharing URLs with saved authentication cookies, followed by multimodal AI analysis.
+7. If the AI detects Tier 1 or Tier 2 sensitivity categories (e.g., PII, FERPA, HIPAA), notify analysts with the file metadata and sharing link.
+8. Enroll each anonymous/org-wide sharing permission in the 180-day lifecycle tracker.
+9. Delete the temporary file after processing.
 
 ## Sharing Link Lifecycle (180-Day Expiration)
 
@@ -158,8 +159,11 @@ For every file type that supports text extraction (PDF, DOCX, XLSX, PPTX, CSV, T
 ### Multimodal is the fallback, not the default
 The multimodal path (sending images to the AI) is reserved for: actual image files (PNG, JPG, TIFF, etc.), scanned PDFs where text extraction and OCR both fail, and PDF pages that contain primarily visual content. Everything else goes through text extraction.
 
-### Folder shares are always flagged for human review
-When a folder (not a file) is shared with anonymous or org-wide access, the system does NOT attempt AI analysis. It immediately creates an alert for a human analyst. The reasoning: a shared folder's risk grows over time as new files are added, and AI can't predict what will be added in the future.
+### Folder shares are enumerated and analyzed, then flagged
+When a folder is shared with anonymous or org-wide access, the worker enumerates its contents via Graph API and analyzes each child file individually (download, text extraction, AI analysis). The folder is also flagged for analyst review because its risk grows over time as new files inherit the sharing scope.
+
+### Delegated content types use browser screenshots
+Loop components, OneNote notebooks, and Whiteboards cannot be fetched via the application-level Graph API. These items are parked as `pending_manual_inspection` by the worker and processed through the dashboard's Inspection Queue. Processing uses a headless Playwright browser with saved authentication cookies (obtained via an interactive browser session streamed to the dashboard) to screenshot the sharing URL, then runs multimodal AI analysis on the captured image.
 
 ### Temporary files never touch persistent disk
 All downloaded files are stored on a tmpfs mount (RAM-backed filesystem) in the worker container. This ensures files are automatically cleaned up on container restart and never persist to disk. The worker also explicitly deletes files after processing.

@@ -125,7 +125,7 @@ services:
       dockerfile: Dockerfile
     container_name: sharesentinel-dashboard
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=100m
+      - /tmp:rw,nosuid,size=512m
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-sharesentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharesentinel}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-https://sharesentinel.uvu.edu}
@@ -159,6 +159,9 @@ services:
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
       - AI_MAX_TOKENS=${AI_MAX_TOKENS:-1024}
       - TEXT_CONTENT_LIMIT=${TEXT_CONTENT_LIMIT:-100000}
+
+      # Browser auth (SharePoint root for cookie capture)
+      - SHAREPOINT_ROOT_URL=https://uvu365.sharepoint.com/
     volumes:
       - ./config:/app/config:ro
       - ${AZURE_CERTIFICATE:-./JonPnPCert.pfx}:/app/certs/JonPnPCert.pfx:ro

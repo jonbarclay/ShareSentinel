@@ -275,6 +275,7 @@ async def callback(request: Request):
         "code": code,
         "redirect_uri": config.OIDC_REDIRECT_URI,
         "grant_type": "authorization_code",
+        "scope": "openid profile email offline_access https://graph.microsoft.com/Notes.Read.All https://graph.microsoft.com/Files.Read.All",
     }
 
     async with httpx.AsyncClient() as client:

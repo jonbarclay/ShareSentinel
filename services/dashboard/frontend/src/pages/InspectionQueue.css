@@ -219,3 +219,49 @@
   color: var(--uvu-text-muted);
   font-size: 0.9rem;
 }
+
+/* Browser auth indicator */
+.browser-auth-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 1rem;
+  border-radius: 6px;
+  border: 1px solid var(--uvu-border);
+  font-size: 0.85rem;
+}
+
+.browser-auth-indicator.auth-active {
+  background: rgba(39, 93, 56, 0.06);
+  border-color: rgba(39, 93, 56, 0.25);
+}
+
+.browser-auth-indicator.auth-active .browser-auth-indicator-text {
+  color: #275d38;
+  font-weight: 500;
+}
+
+.browser-auth-indicator.auth-inactive {
+  background: var(--uvu-surface);
+}
+
+.browser-auth-indicator.auth-inactive .browser-auth-indicator-text {
+  color: var(--uvu-text-muted);
+}
+
+.btn-sm {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.78rem;
+}
+
+/* Batch progress indicator */
+.batch-progress {
+  padding: 0.6rem 1rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  background: rgba(37, 99, 235, 0.08);
+  border: 1px solid rgba(37, 99, 235, 0.25);
+  color: #2563eb;
+}

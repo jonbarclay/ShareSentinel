@@ -48,8 +48,11 @@ export default function EventTable({ events }: { events: Event[] }) {
               onClick={() => nav(`/events/${e.event_id}`)}
               className="event-row"
             >
-              <td className="cell-filename" title={e.file_name ?? "—"}>
-                {e.file_name || "—"}
+              <td className="cell-filename" title={e.file_name || String(e.object_id ?? "") || "—"}>
+                {e.file_name || (e.object_id ? decodeURIComponent(String(e.object_id).split("/").pop() || "") : "") || "—"}
+                {!e.file_name && e.item_type === "Folder" && (
+                  <span style={{ marginLeft: 6, fontSize: "0.7rem", fontWeight: 600, color: "#6b778c", background: "#f4f5f7", padding: "1px 6px", borderRadius: 3 }}>Folder</span>
+                )}
               </td>
               <td title={e.user_id}>
                 <span

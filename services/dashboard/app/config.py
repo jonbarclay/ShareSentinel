@@ -88,3 +88,6 @@ else:
         "AUTH_DISABLED=true to run without authentication."
     )
     sys.exit(1)
+
+# --- Browser Auth (SharePoint root for cookie capture) ---
+SHAREPOINT_ROOT_URL = os.environ.get("SHAREPOINT_ROOT_URL", "https://www.office.com")

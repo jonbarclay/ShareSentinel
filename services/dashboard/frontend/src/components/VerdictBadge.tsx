@@ -42,7 +42,7 @@ export default function VerdictBadge({
 
   const effectiveTier = tier || "none";
   const colors = TIER_COLORS[effectiveTier] || TIER_COLORS.none;
-  const cats = categories || [];
+  const cats = Array.isArray(categories) ? categories : [];
 
   const handleCategoryClick = (e: React.MouseEvent, categoryId: string) => {
     e.stopPropagation();
