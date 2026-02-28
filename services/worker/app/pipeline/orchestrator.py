@@ -300,7 +300,9 @@ async def _process_single_file(
         classifier = FileClassifier()
         file_name = metadata.get("name", getattr(job, "file_name", ""))
         file_size = metadata.get("size", 0)
-        classification = classifier.classify(file_name, "File", file_size, config)
+        classification = classifier.classify_with_metadata(
+            file_name, "File", file_size, config, metadata=metadata,
+        )
 
         await audit_repo.log(event_id, "classification", {
             "category": classification.category.value,
@@ -311,6 +313,32 @@ async def _process_single_file(
             "[%s] Steps 4-5: Classified as %s -> %s",
             event_id, classification.category.value, classification.action.value,
         )
+
+        # Short-circuit: delegated content (Loop/OneNote/Whiteboard)
+        if classification.action == Action.PENDING_MANUAL:
+            content_type_map = {
+                ".loop": "loop", ".fluid": "loop",
+                ".one": "onenote", ".whiteboard": "whiteboard",
+            }
+            ext = ("." + file_name.rsplit(".", 1)[-1]).lower() if "." in file_name else ""
+            ct = content_type_map.get(ext, "delegated")
+            # Check metadata package facet as fallback
+            pkg = (metadata.get("package") or {}).get("type", "").lower()
+            if pkg == "onenote":
+                ct = "onenote"
+            elif pkg == "whiteboard":
+                ct = "whiteboard"
+            elif pkg == "loop":
+                ct = "loop"
+
+            await event_repo.set_content_type(event_id, ct)
+            await event_repo.update_event_status(event_id, "pending_manual_inspection")
+            await audit_repo.log(event_id, "pending_manual_inspection", {
+                "content_type": ct,
+                "reason": classification.reason,
+            })
+            logger.info("[%s] Parked as pending_manual_inspection (content_type=%s)", event_id, ct)
+            return None
 
         # Short-circuit paths that skip download
         if classification.action == Action.FILENAME_ONLY:

@@ -278,6 +278,14 @@ class EventRepository:
             )
             return [dict(r) for r in rows]
 
+    async def set_content_type(self, event_id: str, content_type: str) -> None:
+        """Set the content_type column for an event."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE events SET content_type = $1, updated_at = NOW() WHERE event_id = $2",
+                content_type, event_id,
+            )
+
     async def get_events_by_status(self, status: str, limit: int = 50) -> List[Dict[str, Any]]:
         """Return events matching *status* ordered by received_at."""
         async with self._pool.acquire() as conn:
