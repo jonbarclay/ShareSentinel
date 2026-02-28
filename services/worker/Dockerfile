@@ -9,10 +9,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY services/worker/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app/ ./app/
+# Install shared package
+COPY services/shared/ /tmp/shared/
+RUN pip install --no-cache-dir /tmp/shared && rm -rf /tmp/shared
+
+COPY services/worker/app/ ./app/
 
 # tmpfs mount point (actual tmpfs configured in docker-compose)
 RUN mkdir -p /tmp/sharesentinel

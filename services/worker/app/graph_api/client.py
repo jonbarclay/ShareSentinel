@@ -129,7 +129,8 @@ class GraphClient:
             resp = await client.get(url, headers=self._headers())
             if resp.status_code == 400:
                 # Log the response body for debugging
-                logger.warning("Graph 400 response: %s", resp.text[:500])
+                from ..utils.log_sanitizer import sanitize_response_body
+                logger.warning("Graph 400 response: %s", sanitize_response_body(resp.text))
             self._raise_for_status(resp)
             return resp.json()
 

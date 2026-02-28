@@ -43,6 +43,7 @@ export default function AnalystReviewForm({
   const [disposition, setDisposition] = useState(currentDisposition ?? "");
   const [notes, setNotes] = useState(currentNotes ?? "");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [remediation, setRemediation] = useState<RemediationStatus | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -96,6 +97,7 @@ export default function AnalystReviewForm({
     }
 
     setSaving(true);
+    setError(null);
     try {
       const res = await apiPatch<{
         status: string;
@@ -116,6 +118,8 @@ export default function AnalystReviewForm({
         startPolling();
       }
       onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save review");
     } finally {
       setSaving(false);
     }
@@ -202,6 +206,22 @@ export default function AnalystReviewForm({
       >
         {saving ? "Saving..." : "Save Review"}
       </button>
+
+      {error && (
+        <div
+          style={{
+            padding: "10px 14px",
+            background: "#ffebe6",
+            color: "#de350b",
+            borderRadius: 8,
+            fontSize: "0.85rem",
+            fontWeight: 600,
+            border: "1px solid #de350b30",
+          }}
+        >
+          {error}
+        </div>
+      )}
 
       {badge && remediation && (
         <div

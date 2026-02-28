@@ -9,6 +9,8 @@ import asyncpg
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel
 
+from ..auth import require_role
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["verdicts"])
@@ -89,7 +91,7 @@ async def list_verdicts(
 
 
 @router.patch("/verdicts/{event_id}")
-async def review_verdict(request: Request, event_id: str, body: AnalystReview):
+async def review_verdict(request: Request, event_id: str, body: AnalystReview, user=require_role("analyst")):
     pool = _pool(request)
 
     # Use the authenticated session identity; fall back to "analyst" when auth

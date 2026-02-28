@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from ..config import Config
@@ -17,6 +18,33 @@ class DownloadError(Exception):
     def __init__(self, message: str, reason: str = "download_failed") -> None:
         super().__init__(message)
         self.reason = reason
+
+
+# event_id must be a hex SHA-256 digest (64 hex chars)
+_EVENT_ID_RE = re.compile(r"^[a-f0-9]{64}$")
+
+# Child event IDs: {parent_hex}:child:{index}
+_CHILD_EVENT_ID_RE = re.compile(r"^([a-f0-9]{64}):child:(\d+)$")
+
+
+def _extract_dir_event_id(event_id: str) -> tuple[str, int | None]:
+    """Extract directory-safe event ID and optional child index.
+
+    Returns ``(parent_hex, None)`` for parent IDs and
+    ``(parent_hex, child_index)`` for child IDs.
+    Raises ``DownloadError`` if the format is invalid.
+    """
+    if _EVENT_ID_RE.match(event_id):
+        return event_id, None
+
+    m = _CHILD_EVENT_ID_RE.match(event_id)
+    if m:
+        return m.group(1), int(m.group(2))
+
+    raise DownloadError(
+        f"Invalid event_id format: {event_id!r}",
+        reason="invalid_event_id",
+    )
 
 
 class FileDownloader:
@@ -68,14 +96,29 @@ class FileDownloader:
                 reason="missing_identifiers",
             )
 
+        # Validate event_id format to prevent path traversal
+        dir_id, child_idx = _extract_dir_event_id(event_id)
+
         # Sanitize file_name — strip path separators and traversal sequences
         safe_name = Path(file_name).name.replace("\x00", "")
         if not safe_name or safe_name in (".", ".."):
             safe_name = f"download_{item_id}"
 
-        # Build destination path: /tmp/sharesentinel/{event_id}/{file_name}
-        event_dir = Path(config.tmpfs_path) / event_id
+        # Prefix child filenames to prevent collisions within the shared directory
+        if child_idx is not None:
+            safe_name = f"child{child_idx}_{safe_name}"
+
+        # Build destination path: /tmp/sharesentinel/{dir_id}/{file_name}
+        tmpfs_base = Path(config.tmpfs_path).resolve()
+        event_dir = Path(config.tmpfs_path) / dir_id
         dest_path = event_dir / safe_name
+
+        # Verify resolved path stays within tmpfs mount
+        if not dest_path.resolve().is_relative_to(tmpfs_base):
+            raise DownloadError(
+                f"Path traversal detected: {dest_path} escapes {tmpfs_base}",
+                reason="path_traversal",
+            )
 
         logger.info(
             "Downloading file event_id=%s drive=%s item=%s -> %s",

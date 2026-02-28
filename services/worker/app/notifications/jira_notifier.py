@@ -285,11 +285,12 @@ class JiraNotifier(BaseNotifier):
                 return True
 
         except httpx.HTTPStatusError as exc:
+            from ..utils.log_sanitizer import sanitize_response_body
             logger.error(
                 "Jira API returned %s for event %s: %s",
                 exc.response.status_code,
                 payload.event_id,
-                exc.response.text,
+                sanitize_response_body(exc.response.text),
             )
             return False
         except Exception:

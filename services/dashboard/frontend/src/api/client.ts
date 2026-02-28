@@ -10,6 +10,9 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     window.location.href = "/api/auth/login";
     throw new Error("Unauthorized — redirecting to login");
   }
+  if (res.status === 403) {
+    throw new Error("Insufficient permissions — you do not have access to perform this action.");
+  }
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }

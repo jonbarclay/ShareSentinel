@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import smtplib
+import ssl
 import time
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
@@ -14,7 +15,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import asyncpg
+import bleach
+from bleach.css_sanitizer import CSSSanitizer
 from jinja2 import Environment, FileSystemLoader
+from markupsafe import Markup
 
 from ..ai.base_provider import CATEGORY_LABELS, BaseAIProvider
 from ..config import Config
@@ -30,6 +34,11 @@ NOTIFIABLE_DISPOSITIONS = {"true_positive", "moderate_risk"}
 # Template directory (same as email_notifier pattern)
 _TEMPLATE_DIR = Path("/app/config/notification_templates")
 _PROMPT_DIR = Path("/app/config/prompt_templates")
+
+# HTML sanitization allowlist for AI-generated email bodies
+_SAFE_TAGS = ["p", "br", "strong", "em", "b", "i", "ul", "ol", "li", "h2", "h3", "h4", "span"]
+_SAFE_ATTRS = {"span": ["style"], "p": ["style"]}
+_CSS_SANITIZER = CSSSanitizer(allowed_css_properties=["color", "font-weight", "text-align"])
 
 
 def _find_dir(docker_path: Path, dirname: str) -> Path:
@@ -578,12 +587,16 @@ class UserNotifier:
             meta["provider"] = provider_name
             meta["model"] = model_name
             meta["processing_time"] = processing_time
+            meta["cost"] = self._ai.calculate_cost(meta["input_tokens"], meta["output_tokens"])
 
             # Strip any accidental wrapper tags the AI might have included
             body = body.strip()
             for tag in ("```html", "```", "<html>", "</html>", "<body>", "</body>", "<!DOCTYPE html>", "<head>", "</head>"):
                 body = body.replace(tag, "")
             body = body.strip()
+
+            # Sanitize AI output to prevent XSS via prompt injection
+            body = bleach.clean(body, tags=_SAFE_TAGS, attributes=_SAFE_ATTRS, css_sanitizer=_CSS_SANITIZER, strip=True)
 
             logger.info(
                 "AI generated user notification email (%s/%s, %d tokens) in %.1fs",
@@ -615,7 +628,7 @@ class UserNotifier:
         template = self._jinja_env.get_template("user_notification.html")
         return template.render(
             disposition=disposition,
-            ai_generated_body=ai_generated_body,
+            ai_generated_body=Markup(ai_generated_body),
             file_name=file_name,
             file_path=file_path,
             sharing_type=sharing_type,
@@ -674,7 +687,8 @@ class UserNotifier:
             server = smtplib.SMTP(config.smtp_host, config.smtp_port)
             server.ehlo()
             if config.smtp_use_tls:
-                server.starttls()
+                ctx = ssl.create_default_context()
+                server.starttls(context=ctx)
                 server.ehlo()
             if config.smtp_user and config.smtp_password:
                 server.login(config.smtp_user, config.smtp_password)

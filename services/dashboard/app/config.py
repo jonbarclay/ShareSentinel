@@ -35,6 +35,16 @@ OIDC_ALLOWED_GROUP_IDS: list[str] = [
     if gid.strip()
 ]
 
+# --- Role-based access control ---
+OIDC_ADMIN_GROUP_IDS: list[str] = [
+    gid.strip() for gid in os.environ.get("OIDC_ADMIN_GROUP_IDS", "").split(",")
+    if gid.strip()
+]
+OIDC_ANALYST_GROUP_IDS: list[str] = [
+    gid.strip() for gid in os.environ.get("OIDC_ANALYST_GROUP_IDS", "").split(",")
+    if gid.strip()
+]
+
 # --- Session ---
 SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY", "")
 SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", "28800"))  # 8 hours

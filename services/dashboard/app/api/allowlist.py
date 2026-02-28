@@ -8,6 +8,8 @@ import asyncpg
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel
 
+from ..auth import require_role
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["allowlist"])
@@ -80,7 +82,7 @@ async def list_allowlist_sites(
 
 
 @router.post("/allowlist/sites")
-async def add_allowlist_site(request: Request, body: AddSiteRequest):
+async def add_allowlist_site(request: Request, body: AddSiteRequest, user=require_role("admin")):
     pool = _pool(request)
     user = getattr(request.state, "user", None)
     added_by = user["email"] if user else (body.added_by or "unknown")
@@ -107,7 +109,7 @@ async def add_allowlist_site(request: Request, body: AddSiteRequest):
 
 
 @router.delete("/allowlist/sites/{site_db_id}")
-async def remove_allowlist_site(request: Request, site_db_id: int):
+async def remove_allowlist_site(request: Request, site_db_id: int, user=require_role("admin")):
     pool = _pool(request)
     async with pool.acquire() as conn:
         result = await conn.execute(
@@ -156,7 +158,7 @@ async def search_sharepoint_sites(
 # --- Sync trigger + history ---
 
 @router.post("/allowlist/sync")
-async def trigger_sync(request: Request, body: TriggerSyncRequest):
+async def trigger_sync(request: Request, body: TriggerSyncRequest, user=require_role("admin")):
     pool = _pool(request)
     user = getattr(request.state, "user", None)
     triggered_by = user["email"] if user else (body.triggered_by or "unknown")

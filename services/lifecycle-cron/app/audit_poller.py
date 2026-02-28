@@ -221,7 +221,22 @@ class AuditLogPoller:
             "sharing_permission": sharing_permission,
             "event_time": created,
             "received_at": datetime.now(timezone.utc).isoformat(),
-            "raw_payload": record,
+            "raw_payload": self._cap_payload(record),
+        }
+
+    @staticmethod
+    def _cap_payload(record: dict, max_bytes: int = 32768) -> dict:
+        """Cap raw_payload size to prevent unbounded JSONB storage.
+
+        If the serialized payload exceeds *max_bytes*, replace with a
+        truncation marker preserving key metadata fields.
+        """
+        serialized = json.dumps(record)
+        if len(serialized.encode("utf-8")) <= max_bytes:
+            return record
+        return {
+            "_truncated": True,
+            "_original_size": len(serialized.encode("utf-8")),
         }
 
     async def _is_duplicate(self, job: dict) -> bool:

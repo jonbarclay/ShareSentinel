@@ -1,0 +1,41 @@
+name: Dependency Security Audit
+
+on:
+  schedule:
+    # Weekly on Monday at 08:00 UTC
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - services/worker
+          - services/lifecycle-cron
+          - services/shared
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Install service dependencies
+        run: |
+          cd ${{ matrix.service }}
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          elif [ -f pyproject.toml ]; then
+            pip install .
+          fi
+
+      - name: Run pip-audit
+        run: |
+          cd ${{ matrix.service }}
+          pip-audit --desc --fix --dry-run 2>&1 || true
+          pip-audit

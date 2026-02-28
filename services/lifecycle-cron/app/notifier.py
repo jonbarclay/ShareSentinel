@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import smtplib
+import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -155,7 +156,8 @@ class LifecycleNotifier:
             server = smtplib.SMTP(self.smtp_host, self.smtp_port)
             server.ehlo()
             if self.use_tls:
-                server.starttls()
+                ctx = ssl.create_default_context()
+                server.starttls(context=ctx)
                 server.ehlo()
             if self.smtp_user and self.smtp_password:
                 server.login(self.smtp_user, self.smtp_password)

@@ -51,6 +51,9 @@ class EventRepository:
         raw = getattr(job, "raw_payload", None)
         if raw is not None and not isinstance(raw, str):
             raw = json.dumps(raw) if not isinstance(raw, (dict, list)) else json.dumps(raw)
+        # Defense-in-depth: cap raw_payload size to 32KB
+        if raw is not None and len(raw.encode("utf-8")) > 32768:
+            raw = json.dumps({"_truncated": True, "_original_size": len(raw.encode("utf-8"))})
 
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(

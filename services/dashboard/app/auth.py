@@ -47,6 +47,26 @@ def _discovery_url() -> str:
     return f"{config.OIDC_AUTHORITY}/.well-known/openid-configuration"
 
 
+def _validate_claims(claims: dict) -> None:
+    """Validate aud and iss claims to prevent cross-app token abuse.
+
+    Raises ``ValueError`` if any claim is invalid.
+    """
+    # Validate audience
+    aud = claims.get("aud")
+    if isinstance(aud, list):
+        if config.OIDC_CLIENT_ID not in aud:
+            raise ValueError(f"Token audience {aud} does not include {config.OIDC_CLIENT_ID}")
+    elif aud != config.OIDC_CLIENT_ID:
+        raise ValueError(f"Token audience '{aud}' does not match '{config.OIDC_CLIENT_ID}'")
+
+    # Validate issuer
+    expected_iss = f"https://login.microsoftonline.com/{config.OIDC_TENANT_ID}/v2.0"
+    iss = claims.get("iss")
+    if iss != expected_iss:
+        raise ValueError(f"Token issuer '{iss}' does not match '{expected_iss}'")
+
+
 async def _get_oidc_config(request: Request) -> dict:
     """Fetch and cache the OIDC discovery document (TTL-based)."""
     cache = request.app.state.oidc_config_cache
@@ -134,6 +154,65 @@ async def get_current_user(request: Request) -> Optional[dict]:
     return await _get_session(request, session_id)
 
 
+def _user_roles(user: dict) -> set[str]:
+    """Determine the set of roles for a user based on group membership.
+
+    Roles:
+    - ``viewer``: any authenticated user
+    - ``analyst``: user in analyst OR admin groups
+    - ``admin``: user in admin groups only
+
+    When neither admin nor analyst group IDs are configured, all
+    authenticated users get all roles (graceful degradation).
+    """
+    roles = {"viewer"}
+    user_groups = set(user.get("groups", []))
+
+    admin_groups = set(config.OIDC_ADMIN_GROUP_IDS)
+    analyst_groups = set(config.OIDC_ANALYST_GROUP_IDS)
+
+    # Graceful degradation: no RBAC groups configured = everyone gets all roles
+    if not admin_groups and not analyst_groups:
+        return {"viewer", "analyst", "admin"}
+
+    if admin_groups and user_groups.intersection(admin_groups):
+        roles.update({"analyst", "admin"})
+    if analyst_groups and user_groups.intersection(analyst_groups):
+        roles.add("analyst")
+
+    return roles
+
+
+def require_role(*roles: str):
+    """Return a FastAPI dependency that enforces role-based access.
+
+    Usage::
+
+        @router.patch("/verdicts/{event_id}")
+        async def review(request: Request, user=Depends(require_role("analyst"))):
+            ...
+
+    When auth is disabled (AUTH_ENABLED=False), all role checks pass.
+    """
+    from fastapi import Depends, HTTPException
+
+    async def _check(request: Request):
+        if not config.AUTH_ENABLED:
+            return {"email": "anonymous", "name": "Anonymous", "groups": []}
+        user = getattr(request.state, "user", None)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        user_roles = _user_roles(user)
+        if not user_roles.intersection(set(roles)):
+            raise HTTPException(
+                status_code=403,
+                detail="Insufficient permissions",
+            )
+        return user
+
+    return Depends(_check)
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -143,10 +222,11 @@ async def login(request: Request):
     """Redirect user to Entra ID for authentication."""
     oidc_cfg = await _get_oidc_config(request)
     state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
 
-    # Store state in Redis briefly for CSRF validation
+    # Store state and nonce in Redis briefly for CSRF and replay validation
     redis = request.app.state.session_redis
-    await redis.set(f"ss:oauth_state:{state}", "1", ex=600)  # 10 min
+    await redis.set(f"ss:oauth_state:{state}", nonce, ex=600)  # 10 min
 
     params = {
         "client_id": config.OIDC_CLIENT_ID,
@@ -155,6 +235,7 @@ async def login(request: Request):
         "response_mode": "query",
         "scope": "openid profile email",
         "state": state,
+        "nonce": nonce,
     }
     auth_url = f"{oidc_cfg['authorization_endpoint']}?{urllib.parse.urlencode(params)}"
     return RedirectResponse(url=auth_url, status_code=302)
@@ -178,11 +259,11 @@ async def callback(request: Request):
     if not code or not state:
         return JSONResponse({"error": "missing_params"}, status_code=400)
 
-    # Validate state (CSRF)
+    # Validate state (CSRF) and retrieve expected nonce
     redis = request.app.state.session_redis
     state_key = f"ss:oauth_state:{state}"
-    valid_state = await redis.get(state_key)
-    if not valid_state:
+    expected_nonce = await redis.get(state_key)
+    if not expected_nonce:
         return JSONResponse({"error": "invalid_state"}, status_code=403)
     await redis.delete(state_key)
 
@@ -223,6 +304,7 @@ async def callback(request: Request):
             JsonWebKey.import_key_set(jwks),
         )
         claims.validate()
+        _validate_claims(claims)
     except Exception:
         try:
             logger.info("Token validation failed, refreshing JWKS and retrying")
@@ -232,9 +314,16 @@ async def callback(request: Request):
                 JsonWebKey.import_key_set(jwks),
             )
             claims.validate()
+            _validate_claims(claims)
         except Exception as e:
             logger.error("ID token validation failed after JWKS refresh: %s", e)
             return JSONResponse({"error": "invalid_token"}, status_code=403)
+
+    # Validate nonce to prevent token replay attacks
+    token_nonce = claims.get("nonce")
+    if token_nonce != expected_nonce:
+        logger.error("Nonce mismatch: expected=%s, got=%s", expected_nonce, token_nonce)
+        return JSONResponse({"error": "invalid_nonce"}, status_code=403)
 
     # Extract user info
     user_name = claims.get("name", "Unknown")

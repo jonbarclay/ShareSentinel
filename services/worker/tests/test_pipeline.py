@@ -250,12 +250,24 @@ class TestFolderSharePath(unittest.TestCase):
         dispatcher = _mock_notifier_dispatcher()
         event_repo, verdict_repo, file_hash_repo, audit_repo = _make_repo_mocks()
 
+        mock_graph_client = AsyncMock()
+        mock_graph_client.get_item_metadata = AsyncMock(return_value={
+            "id": "folder-item-id",
+            "name": "Budget Reports",
+            "webUrl": "https://org.sharepoint.com/sites/Finance/Budget%20Reports",
+            "parentReference": {"driveId": "drive-123"},
+            "folder": {"childCount": 0},
+        })
+        mock_graph_client.list_folder_children = AsyncMock(return_value=[])
+
         with (
             patch("app.pipeline.orchestrator.EventRepository", return_value=event_repo),
             patch("app.pipeline.orchestrator.VerdictRepository", return_value=verdict_repo),
             patch("app.pipeline.orchestrator.FileHashRepository", return_value=file_hash_repo),
             patch("app.pipeline.orchestrator.AuditLogRepository", return_value=audit_repo),
             patch("app.pipeline.orchestrator.Cleanup") as mock_cleanup,
+            patch("app.pipeline.orchestrator.GraphClient", return_value=mock_graph_client),
+            patch("app.pipeline.orchestrator._build_graph_auth"),
         ):
             asyncio.run(process_job(
                 job, config, _mock_db_pool(), _mock_redis(),
@@ -276,6 +288,76 @@ class TestFolderSharePath(unittest.TestCase):
 
             # Event should be completed
             event_repo.update_event_status.assert_called()
+
+
+class TestFolderChildEscalation(unittest.TestCase):
+    """When a child file is flagged, the parent folder verdict should reflect the escalation."""
+
+    def test_folder_with_flagged_child_produces_escalated_parent_verdict(self):
+        job = _make_folder_job()
+        config = _make_config()
+        from app.ai.base_provider import CategoryDetection
+        # AI returns a tier_1 category for the child file
+        child_ai_response = _make_ai_response(
+            categories=[CategoryDetection(id="pii_government_id", confidence="high", evidence="SSN found")],
+        )
+        ai_provider = _mock_ai_provider(child_ai_response)
+        dispatcher = _mock_notifier_dispatcher()
+        event_repo, verdict_repo, file_hash_repo, audit_repo = _make_repo_mocks()
+        event_repo.create_child_event = AsyncMock(return_value=1)
+        event_repo.update_folder_progress = AsyncMock()
+
+        mock_graph_client = AsyncMock()
+        mock_graph_client.get_item_metadata = AsyncMock(return_value={
+            "id": "folder-item-id",
+            "name": "Budget Reports",
+            "webUrl": "https://org.sharepoint.com/sites/Finance/Budget%20Reports",
+            "parentReference": {"driveId": "drive-123"},
+            "folder": {"childCount": 1},
+        })
+        # One child file in the folder
+        mock_graph_client.list_folder_children = AsyncMock(return_value=[
+            {
+                "id": "child-item-1",
+                "name": "ssn-list.xlsx",
+                "size": 2048,
+                "file": {"mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+                "parentReference": {"driveId": "drive-123", "path": "/Budget Reports"},
+                "webUrl": "https://org.sharepoint.com/sites/Finance/Budget%20Reports/ssn-list.xlsx",
+            },
+        ])
+
+        with (
+            patch("app.pipeline.orchestrator.EventRepository", return_value=event_repo),
+            patch("app.pipeline.orchestrator.VerdictRepository", return_value=verdict_repo),
+            patch("app.pipeline.orchestrator.FileHashRepository", return_value=file_hash_repo),
+            patch("app.pipeline.orchestrator.AuditLogRepository", return_value=audit_repo),
+            patch("app.pipeline.orchestrator.Cleanup") as mock_cleanup,
+            patch("app.pipeline.orchestrator.GraphClient", return_value=mock_graph_client),
+            patch("app.pipeline.orchestrator._build_graph_auth"),
+            patch("app.pipeline.orchestrator._process_single_file") as mock_process_child,
+        ):
+            # Simulate child file returning a tier_1 response
+            mock_process_child.return_value = child_ai_response
+
+            asyncio.run(process_job(
+                job, config, _mock_db_pool(), _mock_redis(),
+                ai_provider, dispatcher,
+            ))
+
+            # Parent verdict should have been created with aggregated categories
+            assert verdict_repo.create_verdict.call_count == 1
+            verdict_call_args = verdict_repo.create_verdict.call_args
+            parent_response = verdict_call_args[0][1]  # second positional arg is the AnalysisResponse
+            assert parent_response.escalation_tier in ("tier_1", "tier_2"), (
+                f"Expected escalated parent verdict, got tier={parent_response.escalation_tier}"
+            )
+            assert len(parent_response.categories) > 0
+            category_ids = [c.id for c in parent_response.categories]
+            assert "pii_government_id" in category_ids
+
+            # Notification should be dispatched (flagged child)
+            dispatcher.dispatch.assert_called_once()
 
 
 class TestExcludedFileTypePath(unittest.TestCase):

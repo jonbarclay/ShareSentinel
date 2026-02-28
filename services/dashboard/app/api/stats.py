@@ -33,17 +33,29 @@ async def get_stats(request: Request):
                 COUNT(*) FILTER (WHERE v.escalation_tier IN ('tier_1', 'tier_2')
                     AND NOT COALESCE(v.analyst_reviewed, FALSE)) AS unreviewed_escalated,
                 COUNT(*) FILTER (WHERE v.escalation_tier = 'tier_1'
-                    AND NOT COALESCE(v.analyst_reviewed, FALSE)) AS unreviewed_tier_1,
-                SUM(v.estimated_cost_usd)::FLOAT AS total_cost
+                    AND NOT COALESCE(v.analyst_reviewed, FALSE)) AS unreviewed_tier_1
             FROM verdicts v
             JOIN events e ON v.event_id = e.event_id
             WHERE e.parent_event_id IS NULL
+        """)
+        # Total cost across ALL verdicts (including child events) with second_look
+        total_cost_row = await conn.fetchrow("""
+            SELECT
+                COALESCE(SUM(estimated_cost_usd), 0)::FLOAT
+                    + COALESCE(SUM(second_look_cost_usd), 0)::FLOAT AS verdict_cost
+            FROM verdicts
+        """)
+        # User notification AI costs
+        notification_cost_row = await conn.fetchrow("""
+            SELECT COALESCE(SUM(estimated_cost_usd), 0)::FLOAT AS notification_cost
+            FROM user_notifications
         """)
         by_provider = await conn.fetch("""
             SELECT
                 ai_provider,
                 COUNT(*) AS count,
-                SUM(estimated_cost_usd)::FLOAT AS total_cost,
+                (COALESCE(SUM(estimated_cost_usd), 0)
+                    + COALESCE(SUM(second_look_cost_usd), 0))::FLOAT AS total_cost,
                 AVG(processing_time_seconds)::FLOAT AS avg_latency
             FROM verdicts
             GROUP BY ai_provider
@@ -114,9 +126,14 @@ async def get_stats(request: Request):
             LIMIT 10
         """)
 
+    verdicts_dict = dict(verdict_stats) if verdict_stats else {}
+    verdict_cost = total_cost_row["verdict_cost"] if total_cost_row else 0.0
+    notification_cost = notification_cost_row["notification_cost"] if notification_cost_row else 0.0
+    verdicts_dict["total_cost"] = (verdict_cost or 0.0) + (notification_cost or 0.0)
+
     return {
         "events": dict(event_counts),
-        "verdicts": dict(verdict_stats) if verdict_stats else {},
+        "verdicts": verdicts_dict,
         "by_provider": [dict(r) for r in by_provider],
         "by_category": [dict(r) for r in by_category],
         "by_tier": [dict(r) for r in by_tier],

@@ -471,7 +471,10 @@ async def _process_single_file(
         return None
     finally:
         if downloaded_file:
-            Cleanup.cleanup_event_files(event_id, config.tmpfs_path)
+            if ":child:" in event_id:
+                Cleanup.cleanup_child_file(event_id, downloaded_file, config.tmpfs_path)
+            else:
+                Cleanup.cleanup_event_files(event_id, config.tmpfs_path)
 
 
 # ------------------------------------------------------------------
@@ -517,6 +520,14 @@ async def _handle_folder_share(
     folder_item_id = folder_meta.get("id", "")
     folder_name = folder_meta.get("name", getattr(job, "file_name", ""))
     folder_web_url = folder_meta.get("webUrl", "")
+
+    # Persist Graph metadata on the event row (folder path skips metadata pre-screen)
+    await event_repo.update_event_metadata(event_id, {
+        "confirmed_file_name": folder_name,
+        "web_url": folder_web_url,
+        "drive_id": drive_id,
+        "item_id_graph": folder_item_id,
+    })
 
     # ---- Step 2: Enumerate all files ----
     try:
@@ -694,9 +705,23 @@ async def _handle_folder_share(
         f"{flagged_count} flagged, {clean_count} clean, {failed_count} failed."
     )
 
+    # Aggregate categories from all flagged children so the parent verdict
+    # has the correct escalation_tier (tier_1 / tier_2 / none).
+    aggregated_categories: list[CategoryDetection] = []
+    for cr in child_results:
+        if cr.get("escalation_tier") in ("tier_1", "tier_2"):
+            for cat_id in cr.get("categories", []):
+                aggregated_categories.append(
+                    CategoryDetection(
+                        id=cat_id,
+                        confidence="high",
+                        evidence=f"From child file: {cr.get('file_name', 'unknown')}",
+                    )
+                )
+
     # Create a synthetic parent verdict
     response = AnalysisResponse(
-        categories=[], context="institutional", summary=summary_text,
+        categories=aggregated_categories, context="institutional", summary=summary_text,
         recommendation="Review flagged files in the folder." if flagged_count else "No sensitive files detected.",
         raw_response="", provider="system", model="folder_enumeration",
         input_tokens=0, output_tokens=0,

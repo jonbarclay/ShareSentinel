@@ -330,3 +330,9 @@ class BaseAIProvider(ABC):
     def get_model_name(self) -> str:
         """Return the model name (e.g., 'claude-sonnet-4-5-20250929')."""
         pass
+
+    def calculate_cost(self, input_tokens: int, output_tokens: int) -> float:
+        """Calculate the cost for a given token count using provider pricing."""
+        if hasattr(self, "_calculate_cost"):
+            return self._calculate_cost(input_tokens, output_tokens)
+        return 0.0
