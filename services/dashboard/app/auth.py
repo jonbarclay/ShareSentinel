@@ -233,7 +233,7 @@ async def login(request: Request):
         "response_type": "code",
         "redirect_uri": config.OIDC_REDIRECT_URI,
         "response_mode": "query",
-        "scope": "openid profile email",
+        "scope": "openid profile email offline_access https://graph.microsoft.com/Notes.Read.All https://graph.microsoft.com/Files.Read.All",
         "state": state,
         "nonce": nonce,
     }
@@ -357,6 +357,9 @@ async def callback(request: Request):
         "email": user_email,
         "oid": user_oid,
         "groups": user_groups if isinstance(user_groups, list) else [],
+        "graph_access_token": access_token,
+        "graph_refresh_token": tokens.get("refresh_token"),
+        "graph_token_expires_at": int(time.time()) + tokens.get("expires_in", 3600),
     }
     await _set_session(request, session_id, session_data)
 
@@ -408,7 +411,16 @@ async def me(request: Request):
     user = await get_current_user(request)
     if not user:
         return JSONResponse({"error": "not_authenticated"}, status_code=401)
-    return user
+    # Strip internal token fields — never expose tokens to the browser
+    return {k: v for k, v in user.items() if not k.startswith("graph_")}
+
+
+@router.get("/graph-status")
+async def graph_status(request: Request):
+    """Check if the current user has a valid Graph API delegated token."""
+    from .auth_graph import get_graph_token
+    token = await get_graph_token(request)
+    return {"has_graph_token": token is not None}
 
 
 @router.get("/logout")
