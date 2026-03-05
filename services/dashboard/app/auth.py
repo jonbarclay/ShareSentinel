@@ -364,6 +364,32 @@ async def callback(request: Request):
     }
     await _set_session(request, session_id, session_data)
 
+    # Upsert dashboard_users (fire-and-forget — never block login)
+    try:
+        computed_roles = sorted(_user_roles(session_data))
+        db_pool = request.app.state.db
+        if db_pool:
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO dashboard_users (oid, email, display_name, groups, roles, last_seen_at)
+                    VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, NOW())
+                    ON CONFLICT (oid) DO UPDATE SET
+                        email = EXCLUDED.email,
+                        display_name = EXCLUDED.display_name,
+                        groups = EXCLUDED.groups,
+                        roles = EXCLUDED.roles,
+                        last_seen_at = NOW()
+                    """,
+                    user_oid,
+                    user_email,
+                    user_name,
+                    session_data.get("groups", []),
+                    computed_roles,
+                )
+    except Exception:
+        logger.warning("Failed to upsert dashboard_users", exc_info=True)
+
     # Set cookie and redirect to dashboard
     signed_cookie = _sign_session_id(session_id)
     response = RedirectResponse(url="/", status_code=302)
@@ -413,7 +439,9 @@ async def me(request: Request):
     if not user:
         return JSONResponse({"error": "not_authenticated"}, status_code=401)
     # Strip internal token fields — never expose tokens to the browser
-    return {k: v for k, v in user.items() if not k.startswith("graph_")}
+    safe = {k: v for k, v in user.items() if not k.startswith("graph_")}
+    safe["roles"] = sorted(_user_roles(user))
+    return safe
 
 
 @router.get("/graph-status")

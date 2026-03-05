@@ -11,6 +11,7 @@ import base64
 import io
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -46,6 +47,26 @@ JPEG_QUALITY = 85
 
 # Lazy-loaded model
 _model = None
+
+_SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _sanitize_upload_filename(filename: str) -> str:
+    """Return a filesystem-safe basename for uploaded content."""
+    base = Path(filename).name
+    safe = _SAFE_FILENAME_RE.sub("_", base)
+    if safe in {"", ".", ".."}:
+        return "upload"
+    return safe[:255]
+
+
+def _safe_upload_path(work_dir: Path, filename: str) -> Path:
+    """Build a path under ``work_dir`` and reject traversal escapes."""
+    work_dir_resolved = work_dir.resolve()
+    candidate = (work_dir_resolved / filename).resolve()
+    if work_dir_resolved not in candidate.parents:
+        raise ValueError("Unsafe upload filename")
+    return candidate
 
 
 def _get_model():
@@ -208,17 +229,20 @@ async def transcribe(file: UploadFile = File(...)) -> JSONResponse:
 
     Returns JSON with ``text``, ``duration``, and ``language``.
     """
-    filename = file.filename or "upload"
+    original_filename = file.filename or "upload"
+    filename = _sanitize_upload_filename(original_filename)
     ext = Path(filename).suffix.lower()
     work_dir = Path(tempfile.mkdtemp(dir=TMPFS_PATH))
 
     try:
         # Save uploaded file
-        input_path = work_dir / filename
+        input_path = _safe_upload_path(work_dir, filename)
         with open(input_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
         file_size = input_path.stat().st_size
+        if filename != original_filename:
+            logger.debug("Sanitized upload filename from %s to %s", original_filename, filename)
         logger.info("Received %s (%d bytes)", filename, file_size)
 
         is_video = ext in VIDEO_EXTENSIONS
@@ -295,7 +319,8 @@ async def extract_frames(file: UploadFile = File(...)) -> JSONResponse:
     For future Path A support where video is available but transcription
     was already obtained via Graph API.
     """
-    filename = file.filename or "upload"
+    original_filename = file.filename or "upload"
+    filename = _sanitize_upload_filename(original_filename)
     ext = Path(filename).suffix.lower()
 
     if ext not in VIDEO_EXTENSIONS:
@@ -306,11 +331,13 @@ async def extract_frames(file: UploadFile = File(...)) -> JSONResponse:
 
     work_dir = Path(tempfile.mkdtemp(dir=TMPFS_PATH))
     try:
-        input_path = work_dir / filename
+        input_path = _safe_upload_path(work_dir, filename)
         with open(input_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
         file_size = input_path.stat().st_size
+        if filename != original_filename:
+            logger.debug("Sanitized upload filename from %s to %s", original_filename, filename)
         logger.info("Frame extraction request: %s (%d bytes)", filename, file_size)
 
         duration = _get_video_duration(input_path)

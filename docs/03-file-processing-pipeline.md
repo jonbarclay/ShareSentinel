@@ -104,7 +104,7 @@ When a job is pulled from the Redis queue, immediately create a record in the `e
 
 **Fields to record**: event_id, operation, user_id, object_id, file_name, item_type, sharing_type, sharing_permission, event_time, received_at, processing_started_at, status ("processing"), raw_payload.
 
-**Note**: Events now arrive from the audit log poller (in the lifecycle-cron container) rather than a webhook listener. The queue job format is identical regardless of the event source.
+**Note**: Events arrive from the audit log poller in the lifecycle-cron container via the Redis queue.
 
 ### Step 2: Classify Item (File vs. Folder)
 

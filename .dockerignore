@@ -1,0 +1,39 @@
+# Git + local metadata
+.git
+.github
+.claude
+
+# Secrets and local environment files
+.env
+.env.*
+!/.env.example
+*.pem
+*.key
+*.pfx
+nginx/certs/*
+!nginx/certs/.gitkeep
+
+# Python caches/build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+build/
+dist/
+
+# Node artifacts
+node_modules/
+services/dashboard/frontend/node_modules/
+services/dashboard/frontend/dist/
+
+# Local/dev artifacts
+backups/
+/tmp/
+*.tmp
+*.swp
+*.swo
+*~
+

@@ -1,0 +1,58 @@
+.bulk-action-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1.5rem;
+  background: var(--uvu-surface);
+  border-top: 2px solid var(--uvu-border);
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.1);
+  z-index: 100;
+}
+
+.bulk-selected-count {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--uvu-text);
+  white-space: nowrap;
+}
+
+.bulk-action-buttons {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.bulk-disposition-btn {
+  padding: 0.4rem 0.75rem;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.bulk-disposition-btn:hover {
+  opacity: 0.85;
+}
+
+.bulk-clear-btn {
+  margin-left: auto;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--uvu-border);
+  border-radius: 6px;
+  background: var(--uvu-surface);
+  color: var(--uvu-text-secondary);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.bulk-clear-btn:hover {
+  background: var(--uvu-hover);
+}

@@ -255,7 +255,7 @@ class GraphClient:
         """Recursively list children, accumulating file items."""
         url: str | None = (
             f"{GRAPH_BASE}/drives/{drive_id}/items/{folder_item_id}/children"
-            "?$top=200&$select=id,name,size,file,folder,parentReference,webUrl"
+            "?$top=200&$select=id,name,size,file,folder,parentReference,webUrl,cTag,eTag,lastModifiedDateTime"
         )
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             while url:

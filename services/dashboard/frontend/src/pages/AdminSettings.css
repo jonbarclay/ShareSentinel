@@ -1,0 +1,185 @@
+.admin-forbidden {
+  text-align: center;
+  padding: 4rem 2rem;
+  color: var(--uvu-text-muted);
+}
+
+.admin-loading {
+  text-align: center;
+  padding: 4rem 2rem;
+  color: var(--uvu-text-muted);
+}
+
+.admin-settings-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.admin-settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.admin-settings-header h2 {
+  margin: 0;
+}
+
+.admin-settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.feedback-msg {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.feedback-msg.success {
+  color: var(--uvu-green);
+}
+
+.feedback-msg.error {
+  color: #dc3545;
+}
+
+.save-btn {
+  padding: 0.5rem 1.25rem;
+  border: 1px solid var(--uvu-green);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: var(--uvu-green);
+  color: #ffffff;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.save-btn:hover:not(:disabled) {
+  background: var(--uvu-green-d1);
+}
+
+.save-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.settings-category {
+  background: var(--uvu-surface);
+  border-radius: var(--card-radius);
+  border: 1px solid var(--uvu-border);
+  box-shadow: var(--card-shadow);
+  overflow: hidden;
+}
+
+.category-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.category-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--uvu-text);
+}
+
+.category-toggle {
+  font-size: 1.1rem;
+  color: var(--uvu-text-muted);
+  font-weight: 600;
+}
+
+.category-body {
+  border-top: 1px solid var(--uvu-border);
+}
+
+.setting-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--uvu-border);
+  gap: 2rem;
+}
+
+.setting-row:last-child {
+  border-bottom: none;
+}
+
+.setting-label {
+  flex: 1;
+  min-width: 200px;
+}
+
+.setting-name {
+  display: block;
+  font-weight: 500;
+  font-size: 0.9rem;
+  color: var(--uvu-text);
+}
+
+.setting-desc {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--uvu-text-muted);
+  margin-top: 2px;
+}
+
+.setting-control {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 400px;
+}
+
+.setting-input {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--uvu-border);
+  border-radius: 4px;
+  font-size: 0.875rem;
+  background: var(--uvu-bg);
+  color: var(--uvu-text);
+  transition: var(--transition);
+}
+
+.setting-input:focus {
+  outline: none;
+  border-color: var(--uvu-green);
+}
+
+.setting-input.modified {
+  border-color: var(--uvu-gold);
+  background: rgba(218, 165, 32, 0.04);
+}
+
+select.setting-input {
+  cursor: pointer;
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+  color: var(--uvu-text);
+}
+
+.toggle-label.modified span {
+  color: var(--uvu-gold);
+}
+
+.setting-meta {
+  font-size: 0.75rem;
+  color: var(--uvu-text-muted);
+}

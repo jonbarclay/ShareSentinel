@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The audit log poller replaces the original Splunk webhook listener. Instead of receiving events pushed via HTTP webhooks, ShareSentinel now pulls sharing events directly from the Microsoft Graph Audit Log Query API on a configurable schedule (default: every 15 minutes). This eliminates the dependency on Splunk configuration and provides a direct integration with Microsoft 365 audit logs.
+ShareSentinel pulls sharing events directly from the Microsoft Graph Audit Log Query API on a configurable schedule (default: every 15 minutes). This provides a direct integration with Microsoft 365 audit logs without any intermediary dependencies.
 
 The poller runs as a concurrent loop inside the `lifecycle-cron` container alongside the sharing link lifecycle processor.
 
@@ -87,7 +87,7 @@ Each audit record is transformed into a queue job dict that matches the format t
 
 ## Deduplication
 
-Uses the same SHA-256 dedup logic as the original webhook listener:
+Uses SHA-256-based deduplication:
 
 - **Dedup key**: `SHA256(ObjectId + Operation + CreationTime + UserId)`
 - **Redis implementation**: `SET sharesentinel:dedup:<hash> 1 EX 86400 NX` — atomically sets only if not present, with 24-hour TTL.
@@ -136,6 +136,3 @@ On first run, defaults to `NOW() - 1 hour`, so the first poll picks up the most 
 | `services/lifecycle-cron/app/main.py` | Entry point running both lifecycle and audit poll loops |
 | `services/worker/app/database/migrations/012_audit_poll_state.sql` | Migration for polling state table |
 
-## Migration from Webhook Listener
-
-The original `webhook-listener` service (Splunk-based FastAPI receiver) has been removed. The audit log poller is a drop-in replacement that produces identical queue job payloads, so the worker pipeline required no changes to process events from either source.

@@ -73,3 +73,7 @@
   color: var(--uvu-text-muted);
   padding: 0 0.5rem;
 }
+
+.event-list-container.has-bulk-bar {
+  padding-bottom: 72px;
+}

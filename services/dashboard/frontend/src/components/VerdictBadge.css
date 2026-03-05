@@ -16,25 +16,25 @@
 
 /* 1 - Low Risk */
 .verdict-1 {
-  background: rgba(0, 118, 129, 0.15); /* UVU Info/Low tinted */
+  background: rgba(0, 118, 129, 0.15); /* info/low tinted */
   color: #005a63;
 }
 
 /* 2 - Medium-Low Risk */
 .verdict-2 {
-  background: rgba(135, 199, 186, 0.3); /* UVU Lake Calm */
+  background: rgba(135, 199, 186, 0.3); /* low-medium accent */
   color: var(--uvu-green-d2);
 }
 
 /* 3 - Medium Risk */
 .verdict-3 {
-  background: rgba(242, 169, 0, 0.2); /* UVU Medium tinted */
+  background: rgba(242, 169, 0, 0.2); /* medium tinted */
   color: #9e6f00;
 }
 
 /* 4 - High Risk */
 .verdict-4 {
-  background: rgba(227, 82, 5, 0.15); /* UVU High tinted */
+  background: rgba(227, 82, 5, 0.15); /* high tinted */
   color: #ba4304;
 }
 

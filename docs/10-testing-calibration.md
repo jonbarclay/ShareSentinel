@@ -10,15 +10,7 @@ This document outlines the testing strategy for ShareSentinel, including unit te
 
 Each module should have unit tests covering its core logic. Tests should use mocks for external dependencies (Redis, PostgreSQL, Graph API, AI APIs).
 
-**Webhook Listener Tests** (`services/webhook-listener/tests/`):
-
-- `test_validation.py`:
-  - Valid payload with all fields → accepts
-  - Missing required fields (Operation, UserId, ObjectId, ItemType) → rejects with 400
-  - Extra unexpected fields → accepts (Pydantic extra="allow")
-  - Malformed JSON → rejects with 400
-  - Invalid ObjectId (not a URL) → rejects with 400
-  - Various Operation values → all accepted
+**Audit Log Poller Tests** (`services/lifecycle-cron/tests/`):
 
 - `test_deduplication.py`:
   - First event → not a duplicate, returns True for "should process"
@@ -26,13 +18,12 @@ Each module should have unit tests covering its core logic. Tests should use moc
   - Same event_id after TTL expires → not a duplicate (treated as new)
   - Different events with same file but different operation → not duplicates
 
-- `test_webhook.py`:
-  - POST to /webhook/splunk with valid payload → 200 with "queued"
-  - POST to /webhook/splunk with duplicate → 200 with "duplicate"
-  - POST to /webhook/splunk with invalid payload → 400
-  - POST with wrong auth secret → 401
-  - GET to /health → 200 with health status
-  - Redis unavailable → 503
+- `test_audit_poller.py`:
+  - Poll cycle with new events → events queued to Redis
+  - Poll cycle with no new events → last_poll_time updated, no jobs queued
+  - Duplicate events within overlap window → deduplicated via Redis SET NX
+  - Query timeout → logged and retried next cycle
+  - Query failure → logged and retried next cycle
 
 **Worker Tests** (`services/worker/tests/`):
 
@@ -131,46 +122,16 @@ Each module should have unit tests covering its core logic. Tests should use moc
 
 Integration tests verify that components work together correctly. These require running containers (Redis, PostgreSQL) but can mock external APIs (Graph API, AI APIs).
 
-- **Webhook → Redis Queue**: Send a webhook, verify the job appears in the Redis queue with correct format.
+- **Audit Poller → Redis Queue**: Trigger a poll cycle, verify the job appears in the Redis queue with correct format.
 - **Queue → Worker Processing**: Place a job in the Redis queue, verify the worker picks it up and creates a database record.
 - **Database operations**: Verify all repository methods work against a real PostgreSQL instance.
 - **Full pipeline with mocked externals**: Run the complete pipeline with mocked Graph API (returns test file content) and mocked AI API (returns a predetermined verdict). Verify the correct database records are created and notifications are triggered.
-- **Deduplication end-to-end**: Send the same webhook twice, verify only one job is processed.
+- **Deduplication end-to-end**: Submit the same event twice via the poller, verify only one job is processed.
 - **Hash deduplication**: Process a file, then submit a new event for the same content, verify the hash match is detected and the previous verdict is reused.
 
 ### 3. End-to-End Tests
 
 End-to-end tests verify the complete system against real external services. These are run manually during deployment and periodically as smoke tests.
-
-- **Test webhook script** (`scripts/test_webhook.sh`): Sends a sample webhook payload to the listener and verifies the response.
-
-```bash
-#!/bin/bash
-# Send a test webhook to the ShareSentinel listener
-WEBHOOK_URL="${WEBHOOK_URL:-http://localhost:8000/webhook/splunk}"
-AUTH_SECRET="${WEBHOOK_AUTH_SECRET:-test-secret}"
-
-curl -X POST "$WEBHOOK_URL" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $AUTH_SECRET" \
-  -d '{
-    "result": {
-      "Operation": "AnonymousLinkCreated",
-      "Workload": "OneDrive",
-      "UserId": "testuser@organization.com",
-      "ObjectId": "https://organization-my.sharepoint.com/personal/testuser_organization_com/Documents/test-file.pdf",
-      "SiteUrl": "https://organization-my.sharepoint.com/personal/testuser_organization_com/",
-      "SourceFileName": "test-file.pdf",
-      "SourceRelativeUrl": "personal/testuser_organization_com/Documents",
-      "ItemType": "File",
-      "EventSource": "SharePoint",
-      "CreationTime": "2024-01-15T10:30:00Z",
-      "SharingType": "Anonymous",
-      "SharingScope": "Anyone",
-      "SharingPermission": "View"
-    }
-  }'
-```
 
 - **Graph API connectivity test**: Verify that the Azure AD app can authenticate and make a basic Graph API call.
 - **AI API connectivity test**: Send a simple test prompt to each configured AI provider and verify a response is received.
@@ -319,7 +280,7 @@ After initial deployment, maintain the calibration dataset as a regression suite
 
 Given the low volume (< 100 events/day), load testing is not critical for the MVP. However, if desired:
 
-- Use `locust` or a simple script to send 100 webhooks in quick succession.
+- Use `locust` or a simple script to enqueue 100 jobs in quick succession.
 - Verify all 100 are queued correctly.
 - Verify the worker processes all 100 without dropping any.
 - Monitor Redis queue depth during the burst.

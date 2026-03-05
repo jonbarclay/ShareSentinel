@@ -47,7 +47,7 @@ CSV_FILE = PROJECT_ROOT / "test_data.csv"
 def parse_object_id(url: str) -> dict:
     """Parse an ObjectId URL into its components.
 
-    OneDrive personal: /personal/{employee_id}_uvu_edu/Documents/...
+    OneDrive personal: /personal/{employee_id}_example_edu/Documents/...
     SharePoint sites:  /sites/{site_name}/Shared Documents/...
     """
     parsed = urlparse(unquote(url))
@@ -64,7 +64,7 @@ def parse_object_id(url: str) -> dict:
     m = re.match(r"/personal/([^/]+)/Documents/(.*)", path)
     if m:
         raw_user = m.group(1)
-        # Convert 10690343_uvu_edu -> 10690343
+        # Convert 10690343_example_edu -> 10690343
         user_id = raw_user.split("_")[0] if "_" in raw_user else raw_user
         remainder = m.group(2)
         file_name = PurePosixPath(remainder).name

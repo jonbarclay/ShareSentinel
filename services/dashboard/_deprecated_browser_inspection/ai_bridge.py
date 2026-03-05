@@ -227,7 +227,7 @@ async def _call_gemini(
     max_tokens: int,
 ) -> str:
     """Call Google Gemini generateContent API."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
     # Build parts for Gemini
     parts = [{"text": system_prompt}]
@@ -249,8 +249,9 @@ async def _call_gemini(
         "generationConfig": {"maxOutputTokens": max_tokens},
     }
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        resp = await client.post(url, json=payload)
-        resp.raise_for_status()
+        resp = await client.post(url, params={"key": api_key}, json=payload)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Gemini API HTTP {resp.status_code}")
         data = resp.json()
         return data["candidates"][0]["content"]["parts"][0]["text"]
 

@@ -1,7 +1,9 @@
 """Statistics API endpoint."""
 
+from datetime import datetime, timezone
+
 import asyncpg
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 
 router = APIRouter(tags=["stats"])
 
@@ -39,6 +41,10 @@ async def get_stats(request: Request):
             FROM verdicts v
             JOIN events e ON v.event_id = e.event_id
             WHERE e.parent_event_id IS NULL
+        """)
+        # Total files scanned by AI (including child files from folder processing)
+        files_scanned_row = await conn.fetchrow("""
+            SELECT COUNT(*) AS total_files_scanned FROM verdicts
         """)
         # Total cost across ALL verdicts (including child events) with second_look
         total_cost_row = await conn.fetchrow("""
@@ -144,6 +150,7 @@ async def get_stats(request: Request):
     return {
         "events": dict(event_counts),
         "verdicts": verdicts_dict,
+        "total_files_scanned": files_scanned_row["total_files_scanned"] if files_scanned_row else 0,
         "queue_depth": queue_depth,
         "by_provider": [dict(r) for r in by_provider],
         "by_category": [dict(r) for r in by_category],
@@ -152,3 +159,60 @@ async def get_stats(request: Request):
         "top_users": [dict(r) for r in top_users],
         "top_sites": [dict(r) for r in top_sites],
     }
+
+
+@router.get("/stats/scan-activity")
+async def get_scan_activity(
+    request: Request,
+    range: str = Query("30d", pattern=r"^(24h|7d|30d|90d|180d|ytd|all)$"),
+):
+    """Return daily time-series of files scanned and files flagged (tier 1/2)."""
+    pool = _pool(request)
+
+    now = datetime.now(timezone.utc)
+    if range == "24h":
+        # Hourly buckets for last 24 hours
+        trunc = "hour"
+        where = "AND v.created_at >= NOW() - INTERVAL '24 hours'"
+    elif range == "7d":
+        trunc = "day"
+        where = "AND v.created_at >= NOW() - INTERVAL '7 days'"
+    elif range == "30d":
+        trunc = "day"
+        where = "AND v.created_at >= NOW() - INTERVAL '30 days'"
+    elif range == "90d":
+        trunc = "day"
+        where = "AND v.created_at >= NOW() - INTERVAL '90 days'"
+    elif range == "180d":
+        trunc = "day"
+        where = "AND v.created_at >= NOW() - INTERVAL '180 days'"
+    elif range == "ytd":
+        trunc = "day"
+        year_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        where = f"AND v.created_at >= '{year_start.isoformat()}'"
+    else:  # all
+        trunc = "day"
+        where = ""
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(f"""
+            SELECT
+                date_trunc('{trunc}', v.created_at) AS bucket,
+                COUNT(*) AS scanned,
+                COUNT(*) FILTER (
+                    WHERE v.escalation_tier IN ('tier_1', 'tier_2')
+                ) AS flagged
+            FROM verdicts v
+            WHERE 1=1 {where}
+            GROUP BY bucket
+            ORDER BY bucket
+        """)
+
+    return [
+        {
+            "date": row["bucket"].isoformat(),
+            "scanned": row["scanned"],
+            "flagged": row["flagged"],
+        }
+        for row in rows
+    ]

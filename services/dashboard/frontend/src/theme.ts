@@ -1,4 +1,4 @@
-// UVU (Utah Valley University) official color palette
+// Project brand palette
 
 export const uvu = {
   // Brand

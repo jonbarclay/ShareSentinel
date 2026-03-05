@@ -87,7 +87,7 @@
 }
 
 .status-badge.remediated {
-  background: rgba(135, 199, 186, 0.2); /* UVU Lake Calm tinted */
+  background: rgba(135, 199, 186, 0.2); /* low-risk accent */
   color: #0d826a;
 }
 
@@ -131,4 +131,25 @@
 .analyst-flag.acceptable_risk {
   background: #e2e8f0;
   color: #334155;
+}
+
+.cell-checkbox {
+  width: 40px;
+  text-align: center;
+  padding: 8px 12px !important;
+}
+
+.cell-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--uvu-green);
+}
+
+.event-row.selected {
+  background-color: rgba(39, 93, 56, 0.06);
+}
+
+.event-row.selected:hover {
+  background-color: rgba(39, 93, 56, 0.1);
 }

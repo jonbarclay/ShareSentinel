@@ -156,7 +156,7 @@ Operational audit log for troubleshooting. Records key actions and state transit
 CREATE TABLE audit_log (
     id SERIAL PRIMARY KEY,
     event_id VARCHAR(64),                              -- Related event (NULL for system-level entries)
-    action VARCHAR(100) NOT NULL,                      -- e.g., "webhook_received", "file_downloaded", "ai_analysis_completed"
+    action VARCHAR(100) NOT NULL,                      -- e.g., "event_received", "file_downloaded", "ai_analysis_completed"
     details JSONB,                                     -- Action-specific details
     status VARCHAR(20),                                -- "success", "failure", "warning"
     error_message TEXT,                                -- Error details if status = 'failure'

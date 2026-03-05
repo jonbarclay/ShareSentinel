@@ -44,11 +44,22 @@ class LifecycleConfig:
     allowlist_disabled_capability: str = "ExternalUserSharingOnly"
     sharepoint_admin_url: str = ""
 
+    # Folder rescan
+    folder_rescan_enabled: bool = False
+    folder_rescan_interval_hours: int = 168  # 7 days
+    folder_rescan_batch_size: int = 50
+
     # Logging
     log_level: str = "INFO"
 
     @classmethod
-    def from_env(cls) -> "LifecycleConfig":
+    def from_env(cls, db_overrides: dict[str, str] | None = None) -> "LifecycleConfig":
+        ov = db_overrides or {}
+
+        def _g(db_key: str, env_key: str, default: str) -> str:
+            """DB override > env var > default."""
+            return ov.get(db_key) or os.environ.get(env_key, default)
+
         return cls(
             database_url=os.environ.get("DATABASE_URL", ""),
             azure_tenant_id=os.environ.get("AZURE_TENANT_ID", ""),
@@ -61,13 +72,13 @@ class LifecycleConfig:
             smtp_user=os.environ.get("SMTP_USER", ""),
             smtp_password=os.environ.get("SMTP_PASSWORD", ""),
             smtp_use_tls=os.environ.get("SMTP_USE_TLS", "true").lower() == "true",
-            email_from=os.environ.get("EMAIL_FROM", ""),
-            security_email=os.environ.get("SECURITY_EMAIL", ""),
-            check_interval_hours=int(os.environ.get("LIFECYCLE_CHECK_INTERVAL_HOURS", "24")),
-            max_days=int(os.environ.get("LIFECYCLE_MAX_DAYS", "180")),
+            email_from=_g("email_from", "EMAIL_FROM", ""),
+            security_email=_g("security_email", "SECURITY_EMAIL", ""),
+            check_interval_hours=int(_g("lifecycle_check_interval_hours", "LIFECYCLE_CHECK_INTERVAL_HOURS", "24")),
+            max_days=int(_g("lifecycle_max_days", "LIFECYCLE_MAX_DAYS", "180")),
             redis_url=os.environ.get("REDIS_URL", ""),
-            audit_poll_enabled=os.environ.get("AUDIT_POLL_ENABLED", "true").lower() == "true",
-            audit_poll_interval_minutes=int(os.environ.get("AUDIT_POLL_INTERVAL_MINUTES", "15")),
+            audit_poll_enabled=_g("audit_poll_enabled", "AUDIT_POLL_ENABLED", "true").lower() == "true",
+            audit_poll_interval_minutes=int(_g("audit_poll_interval_minutes", "AUDIT_POLL_INTERVAL_MINUTES", "15")),
             audit_poll_operations=os.environ.get(
                 "AUDIT_POLL_OPERATIONS",
                 "AnonymousLinkCreated,CompanyLinkCreated",
@@ -85,5 +96,14 @@ class LifecycleConfig:
                 "ALLOWLIST_DISABLED_CAPABILITY", "ExternalUserSharingOnly"
             ),
             sharepoint_admin_url=os.environ.get("SHAREPOINT_ADMIN_URL", ""),
-            log_level=os.environ.get("LOG_LEVEL", "INFO"),
+            folder_rescan_enabled=_g(
+                "folder_rescan_enabled", "FOLDER_RESCAN_ENABLED", "false"
+            ).lower() == "true",
+            folder_rescan_interval_hours=int(_g(
+                "folder_rescan_interval_hours", "FOLDER_RESCAN_INTERVAL_HOURS", "168"
+            )),
+            folder_rescan_batch_size=int(_g(
+                "folder_rescan_batch_size", "FOLDER_RESCAN_BATCH_SIZE", "50"
+            )),
+            log_level=_g("log_level", "LOG_LEVEL", "INFO"),
         )

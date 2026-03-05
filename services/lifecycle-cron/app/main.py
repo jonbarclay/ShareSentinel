@@ -112,6 +112,35 @@ async def allowlist_enforcement_loop(
         await asyncio.sleep(60)  # Poll every 60s for manual triggers
 
 
+async def folder_rescan_loop(
+    db_pool: asyncpg.Pool,
+    auth: GraphAuth,
+    config: LifecycleConfig,
+) -> None:
+    """Run the folder rescan processor on a fixed interval."""
+    import redis.asyncio as aioredis
+
+    from .folder_rescan import run_folder_rescan
+
+    redis_client = aioredis.from_url(config.redis_url)
+    interval_seconds = config.folder_rescan_interval_hours * 3600
+
+    logger.info(
+        "Folder rescan loop starting (interval=%dh, batch=%d)",
+        config.folder_rescan_interval_hours,
+        config.folder_rescan_batch_size,
+    )
+
+    while True:
+        try:
+            stats = await run_folder_rescan(db_pool, auth, redis_client, config)
+            logger.info("Folder rescan cycle complete: %s", stats)
+        except Exception:
+            logger.exception("Error in folder rescan cycle")
+        logger.info("Folder rescan sleeping %d seconds until next cycle", interval_seconds)
+        await asyncio.sleep(interval_seconds)
+
+
 async def audit_poll_loop(
     db_pool: asyncpg.Pool,
     auth: GraphAuth,
@@ -153,6 +182,13 @@ async def main() -> None:
     db_pool = await asyncpg.create_pool(config.database_url, min_size=1, max_size=3)
     logger.info("Database pool created")
 
+    # Reload config with DB overrides from admin panel
+    from .db_config import load_db_overrides
+    db_overrides = await load_db_overrides(db_pool)
+    if db_overrides:
+        logger.info("Loaded %d DB config overrides", len(db_overrides))
+        config = LifecycleConfig.from_env(db_overrides=db_overrides)
+
     # Set up Graph API auth
     auth = GraphAuth(
         tenant_id=config.azure_tenant_id,
@@ -162,7 +198,7 @@ async def main() -> None:
         certificate_password=config.azure_certificate_password or None,
     )
 
-    tasks = [lifecycle_loop(db_pool, auth, config)]
+    tasks: list = [lifecycle_loop(db_pool, auth, config)]
 
     if config.audit_poll_enabled:
         if not config.redis_url:
@@ -172,6 +208,18 @@ async def main() -> None:
             tasks.append(audit_poll_loop(db_pool, auth, config))
     else:
         logger.info("Audit log polling disabled")
+
+    if config.folder_rescan_enabled:
+        if not config.redis_url:
+            logger.error(
+                "FOLDER_RESCAN_ENABLED=true but REDIS_URL is not set — "
+                "skipping folder rescan"
+            )
+        else:
+            logger.info("Folder rescan enabled (interval=%dh)", config.folder_rescan_interval_hours)
+            tasks.append(folder_rescan_loop(db_pool, auth, config))
+    else:
+        logger.info("Folder rescan disabled")
 
     if config.allowlist_enforcement_enabled:
         if not config.redis_url:

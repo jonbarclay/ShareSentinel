@@ -261,6 +261,13 @@ async def main() -> None:
     await run_migrations(db_pool)
     logger.info("Database ready")
 
+    # Reload config with DB overrides from admin panel
+    from app.database.db_config import load_db_overrides
+    db_overrides = await load_db_overrides(db_pool)
+    if db_overrides:
+        logger.info("Loaded %d DB config overrides", len(db_overrides))
+        config = Config.from_env(db_overrides=db_overrides)
+
     # Recover events stuck in 'processing' from a prior crash/restart
     await recover_stuck_events(db_pool, redis_conn, config)
 

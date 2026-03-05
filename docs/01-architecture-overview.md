@@ -116,7 +116,7 @@ ShareSentinel monitors file sharing activity in OneDrive and SharePoint. When a 
 
 ## Technology Rationale
 
-**Direct Audit Log Polling over Splunk Webhooks**: Eliminates the dependency on Splunk configuration and the intermediary hop. The Microsoft Graph Audit Log Query API provides the same event data directly. The 15-minute polling interval is sufficient given the system's high latency tolerance.
+**Direct Audit Log Polling**: The Microsoft Graph Audit Log Query API provides sharing event data directly. The 15-minute polling interval is sufficient given the system's high latency tolerance, and polling avoids the complexity of webhook infrastructure.
 
 **Redis over RabbitMQ**: Redis is simpler to operate, has a smaller footprint, and provides everything we need (basic queue, deduplication cache, TTL-based key expiry). RabbitMQ would be overkill for < 100 jobs/day.
 

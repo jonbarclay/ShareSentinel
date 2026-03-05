@@ -1,0 +1,116 @@
+.admin-users-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.admin-users-container h2 {
+  margin: 0;
+}
+
+.users-info-banner {
+  background: rgba(39, 93, 56, 0.06);
+  border: 1px solid rgba(39, 93, 56, 0.15);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  font-size: 0.85rem;
+  color: var(--uvu-text-muted);
+}
+
+.users-card {
+  background: var(--uvu-surface);
+  border-radius: var(--card-radius);
+  border: 1px solid var(--uvu-border);
+  box-shadow: var(--card-shadow);
+  overflow: hidden;
+}
+
+.users-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.users-table th {
+  text-align: left;
+  padding: 0.75rem 1rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--uvu-text-muted);
+  border-bottom: 2px solid var(--uvu-border);
+}
+
+.users-table td {
+  padding: 0.65rem 1rem;
+  font-size: 0.875rem;
+  border-bottom: 1px solid var(--uvu-border);
+  color: var(--uvu-text);
+}
+
+.users-table tr:hover td {
+  background: rgba(39, 93, 56, 0.03);
+}
+
+.role-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin-right: 4px;
+}
+
+.role-badge.role-admin {
+  background: rgba(39, 93, 56, 0.12);
+  color: var(--uvu-green);
+}
+
+.role-badge.role-analyst {
+  background: rgba(218, 165, 32, 0.12);
+  color: #b8860b;
+}
+
+.role-badge.role-viewer {
+  background: rgba(108, 117, 125, 0.12);
+  color: #6c757d;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 0.5rem 0;
+}
+
+.pagination button {
+  padding: 0.4rem 1rem;
+  border: 1px solid var(--uvu-border);
+  border-radius: 4px;
+  background: var(--uvu-surface);
+  color: var(--uvu-text);
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: var(--transition);
+}
+
+.pagination button:hover:not(:disabled) {
+  border-color: var(--uvu-green);
+}
+
+.pagination button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pagination span {
+  font-size: 0.85rem;
+  color: var(--uvu-text-muted);
+}
+
+.empty-message {
+  text-align: center;
+  padding: 2rem;
+  color: var(--uvu-text-muted);
+}

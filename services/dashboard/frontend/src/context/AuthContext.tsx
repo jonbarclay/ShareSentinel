@@ -5,6 +5,7 @@ interface User {
   email: string;
   oid: string;
   groups: string[];
+  roles: string[];
 }
 
 interface AuthContextType {
@@ -65,4 +66,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 export function useAuth() {
   return useContext(AuthContext);
+}
+
+export function useIsAdmin() {
+  const { user } = useAuth();
+  return user?.roles?.includes("admin") ?? false;
 }

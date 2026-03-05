@@ -157,10 +157,8 @@ async def execute_remediation(
             {"reason": "Missing drive_id or item_id_graph"},
         )
 
-    # ---- 3. Build and send remediation report (security team only) ----
+    # ---- 3. Build and send remediation report (disabled) ----
     to_addresses: List[str] = []
-    if config.security_email:
-        to_addresses.append(config.security_email)
 
     report_sent = False
     report_sent_at: Optional[datetime] = None

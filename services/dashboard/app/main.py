@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .api import events, verdicts, stats, audit, allowlist
+from .api import events, verdicts, stats, audit, allowlist, admin
 from .config import (
     DATABASE_URL, ALLOWED_ORIGINS, AUTH_ENABLED, REDIS_URL, SESSION_REDIS_DB,
 )
@@ -117,6 +117,7 @@ app.include_router(verdicts.router, prefix="/api")
 app.include_router(stats.router, prefix="/api")
 app.include_router(audit.router, prefix="/api")
 app.include_router(allowlist.router, prefix="/api")
+app.include_router(admin.router, prefix="/api")
 
 
 @app.get("/api/health")

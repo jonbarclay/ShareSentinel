@@ -76,7 +76,7 @@ The following documents in the `docs/` directory contain detailed specifications
 | Document | Description |
 |-|-|
 | [docs/01-architecture-overview.md](docs/01-architecture-overview.md) | Full system architecture, data flow diagrams, container layout, technology rationale |
-| [docs/02-webhook-listener-service.md](docs/02-webhook-listener-service.md) | Event ingestion via audit log poller, Graph API query flow, record-to-job mapping |
+| [docs/02-event-ingestion-service.md](docs/02-event-ingestion-service.md) | Event ingestion via audit log poller, Graph API query flow, record-to-job mapping |
 | [docs/03-file-processing-pipeline.md](docs/03-file-processing-pipeline.md) | Master orchestration logic for the worker: metadata pre-screen, download, classification, routing |
 | [docs/04-text-extraction-module.md](docs/04-text-extraction-module.md) | Text extraction strategies for every supported file type, sampling logic, OCR fallback |
 | [docs/05-image-preprocessing-module.md](docs/05-image-preprocessing-module.md) | Image resizing, compression, scanned PDF page rendering, multimodal preparation |
@@ -151,7 +151,7 @@ share-sentinel/
 ## Critical Design Decisions
 
 ### Events are ingested via direct audit log polling
-The system queries the Microsoft Graph Audit Log Query API directly every 15 minutes, replacing the original Splunk webhook approach. This eliminates the Splunk dependency and provides a simpler, more reliable event pipeline.
+The system queries the Microsoft Graph Audit Log Query API directly every 15 minutes. Polling avoids the complexity of webhook infrastructure and provides a direct, reliable event pipeline.
 
 ### Files are ALWAYS text-extracted first
 For every file type that supports text extraction (PDF, DOCX, XLSX, PPTX, CSV, TXT), always extract text before sending to the AI. Send extracted text as a text-based prompt (cheaper, faster, often more accurate). Only fall back to multimodal (image-based) analysis when text extraction fails (scanned documents, actual images). This minimizes API costs significantly.

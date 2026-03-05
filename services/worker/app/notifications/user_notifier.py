@@ -25,6 +25,7 @@ from ..config import Config
 from ..database.repositories import AuditLogRepository
 from ..graph_api.auth import GraphAuth
 from ..graph_api.client import GraphClient
+from ..utils.log_sanitizer import sanitize_response_body
 
 logger = logging.getLogger(__name__)
 
@@ -502,6 +503,7 @@ class UserNotifier:
             "analysis_recommendation": analysis_recommendation,
             "second_look_summary": second_look_summary or "Not performed",
             "second_look_reasoning": second_look_reasoning or "Not performed",
+            "security_email": self._config.security_email or "security-team@example.com",
         }))
 
         try:
@@ -558,17 +560,27 @@ class UserNotifier:
                         "maxOutputTokens": 1024,
                     },
                 }
-                url = f"{self._ai._base_url}/{model_name}:generateContent?key={self._ai._api_key}"
+                url = f"{self._ai._base_url}/{model_name}:generateContent"
                 # Retry with backoff on 429 rate limits
                 resp = None
                 for attempt in range(4):
-                    resp = await self._ai._http.post(url, json=request_body)
+                    resp = await self._ai._http.post(
+                        url,
+                        params={"key": self._ai._api_key},
+                        json=request_body,
+                    )
                     if resp.status_code != 429:
                         break
                     wait = (attempt + 1) * 15
                     logger.warning("Gemini 429 rate limited, retrying in %ds (attempt %d)", wait, attempt + 1)
                     await asyncio.sleep(wait)
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    logger.warning(
+                        "Gemini user-notification request failed: HTTP %d: %s",
+                        resp.status_code,
+                        sanitize_response_body(resp.text, max_length=200),
+                    )
+                    return "", meta
                 data = resp.json()
                 candidates = data.get("candidates", [])
                 body = ""
@@ -634,6 +646,7 @@ class UserNotifier:
             sharing_type=sharing_type,
             category_labels=category_labels,
             event_id=event_id,
+            security_email=self._config.security_email or "security-team@example.com",
         )
 
     # ------------------------------------------------------------------

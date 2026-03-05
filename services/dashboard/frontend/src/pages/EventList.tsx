@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { apiFetch } from "../api/client";
 import EventTable from "../components/EventTable";
+import BulkActionBar from "../components/BulkActionBar";
+import BulkReviewDialog from "../components/BulkReviewDialog";
 import "./EventList.css";
 
 export default function EventList() {
@@ -11,7 +13,7 @@ export default function EventList() {
   const statusFilter = params.get("status") ?? "";
   const userFilter = params.get("user") ?? "";
   const itemTypeFilter = params.get("item_type") ?? "";
-  
+
   const fileNameFilter = params.get("file_name") ?? "";
   const siteUrlFilter = params.get("site_url") ?? "";
   const tierFilter = params.get("tier") ?? "";
@@ -19,6 +21,10 @@ export default function EventList() {
 
   const hideReviewed = params.get("hide_reviewed") === "1";
   const onlyReviewed = params.get("reviewed") === "true";
+
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [dialogDisposition, setDialogDisposition] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     function fetchEvents() {
@@ -44,6 +50,11 @@ export default function EventList() {
     fetchEvents();
     const id = setInterval(fetchEvents, 30_000);
     return () => clearInterval(id);
+  }, [page, statusFilter, userFilter, itemTypeFilter, fileNameFilter, siteUrlFilter, tierFilter, categoryFilter, hideReviewed, onlyReviewed, refreshKey]);
+
+  // Clear selection when filters or page change
+  useEffect(() => {
+    setSelectedIds(new Set());
   }, [page, statusFilter, userFilter, itemTypeFilter, fileNameFilter, siteUrlFilter, tierFilter, categoryFilter, hideReviewed, onlyReviewed]);
 
   const totalPages = Math.ceil(data.total / 50);
@@ -54,8 +65,19 @@ export default function EventList() {
     setParams(params);
   }
 
+  const fileNames: Record<string, string> = {};
+  for (const e of data.events) {
+    fileNames[e.event_id as string] = (e.file_name as string) || String(e.event_id);
+  }
+
+  function handleBulkComplete() {
+    setDialogDisposition(null);
+    setSelectedIds(new Set());
+    setRefreshKey((k) => k + 1);
+  }
+
   return (
-    <div className="event-list-container">
+    <div className={`event-list-container${selectedIds.size > 0 ? " has-bulk-bar" : ""}`}>
       <h2 className="page-title">Events ({data.total})</h2>
 
       <div className="filters-bar">
@@ -123,7 +145,12 @@ export default function EventList() {
 
       <div className="table-wrapper card">
         {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-        <EventTable events={data.events as any} />
+        <EventTable
+          events={data.events as any}
+          selectable
+          selectedIds={selectedIds}
+          onSelectionChange={setSelectedIds}
+        />
       </div>
 
       {totalPages > 1 && (
@@ -140,6 +167,23 @@ export default function EventList() {
             onClick={() => { params.set("page", String(page + 1)); setParams(params); }}
           >Next</button>
         </div>
+      )}
+
+      {selectedIds.size > 0 && (
+        <BulkActionBar
+          selectedCount={selectedIds.size}
+          onDispositionClick={setDialogDisposition}
+          onClearSelection={() => setSelectedIds(new Set())}
+        />
+      )}
+      {dialogDisposition && (
+        <BulkReviewDialog
+          disposition={dialogDisposition}
+          eventIds={Array.from(selectedIds)}
+          fileNames={fileNames}
+          onClose={() => setDialogDisposition(null)}
+          onComplete={handleBulkComplete}
+        />
       )}
     </div>
   );

@@ -108,9 +108,15 @@ class Config:
     prompt_template_dir: str = "config/prompt_templates"
 
     @classmethod
-    def from_env(cls) -> "Config":
-        email_to_raw = os.environ.get("EMAIL_TO", "")
-        channels_raw = os.environ.get("NOTIFICATION_CHANNELS", "email")
+    def from_env(cls, db_overrides: dict[str, str] | None = None) -> "Config":
+        ov = db_overrides or {}
+
+        def _g(db_key: str, env_key: str, default: str) -> str:
+            """DB override > env var > default."""
+            return ov.get(db_key) or os.environ.get(env_key, default)
+
+        email_to_raw = _g("email_to", "EMAIL_TO", "")
+        channels_raw = _g("notification_channels", "NOTIFICATION_CHANNELS", "email")
 
         return cls(
             redis_url=os.environ.get("REDIS_URL", "redis://redis:6379/0"),
@@ -120,47 +126,47 @@ class Config:
             azure_client_secret=os.environ.get("AZURE_CLIENT_SECRET", ""),
             azure_certificate_path=os.environ.get("AZURE_CERTIFICATE", ""),
             azure_certificate_password=os.environ.get("AZURE_CERTIFICATE_PASS", ""),
-            ai_provider=os.environ.get("AI_PROVIDER", "anthropic"),
+            ai_provider=_g("ai_provider", "AI_PROVIDER", "anthropic"),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
-            anthropic_model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929"),
+            anthropic_model=_g("anthropic_model", "ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929"),
             openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
-            openai_model=os.environ.get("OPENAI_MODEL", "gpt-4o"),
+            openai_model=_g("openai_model", "OPENAI_MODEL", "gpt-4o"),
             gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
-            gemini_model=os.environ.get("GEMINI_MODEL", "gemini-2.0-flash"),
+            gemini_model=_g("gemini_model", "GEMINI_MODEL", "gemini-2.0-flash"),
             vertex_project=os.environ.get("VERTEX_PROJECT", ""),
             vertex_location=os.environ.get("VERTEX_LOCATION", "us-central1"),
-            ai_temperature=float(os.environ.get("AI_TEMPERATURE", "0")),
-            max_file_size_bytes=int(os.environ.get("MAX_FILE_SIZE_BYTES", "4294967296")),
-            text_content_limit=int(os.environ.get("TEXT_CONTENT_LIMIT", "100000")),
-            hash_reuse_days=int(os.environ.get("HASH_REUSE_DAYS", "30")),
-            analyst_notification_enabled=os.environ.get("ANALYST_NOTIFICATION_ENABLED", "true").lower() == "true",
+            ai_temperature=float(_g("ai_temperature", "AI_TEMPERATURE", "0")),
+            max_file_size_bytes=int(_g("max_file_size_bytes", "MAX_FILE_SIZE_BYTES", "4294967296")),
+            text_content_limit=int(_g("text_content_limit", "TEXT_CONTENT_LIMIT", "100000")),
+            hash_reuse_days=int(_g("hash_reuse_days", "HASH_REUSE_DAYS", "30")),
+            analyst_notification_enabled=_g("analyst_notification_enabled", "ANALYST_NOTIFICATION_ENABLED", "true").lower() == "true",
             notification_channels=[c.strip() for c in channels_raw.split(",") if c.strip()],
-            notify_on_folder_share=os.environ.get("NOTIFY_ON_FOLDER_SHARE", "true").lower() == "true",
-            notify_on_failure=os.environ.get("NOTIFY_ON_FAILURE", "true").lower() == "true",
+            notify_on_folder_share=_g("notify_on_folder_share", "NOTIFY_ON_FOLDER_SHARE", "true").lower() == "true",
+            notify_on_failure=_g("notify_on_failure", "NOTIFY_ON_FAILURE", "true").lower() == "true",
             smtp_host=os.environ.get("SMTP_HOST", ""),
             smtp_port=int(os.environ.get("SMTP_PORT", "587")),
             smtp_user=os.environ.get("SMTP_USER", ""),
             smtp_password=os.environ.get("SMTP_PASSWORD", ""),
             smtp_use_tls=os.environ.get("SMTP_USE_TLS", "true").lower() == "true",
-            email_from=os.environ.get("EMAIL_FROM", ""),
+            email_from=_g("email_from", "EMAIL_FROM", ""),
             email_to=[e.strip() for e in email_to_raw.split(",") if e.strip()],
             jira_url=os.environ.get("JIRA_URL", ""),
             jira_email=os.environ.get("JIRA_EMAIL", ""),
             jira_api_token=os.environ.get("JIRA_API_TOKEN", ""),
             jira_project_key=os.environ.get("JIRA_PROJECT_KEY", ""),
             jira_issue_type=os.environ.get("JIRA_ISSUE_TYPE", "Task"),
-            dashboard_url=os.environ.get("DASHBOARD_URL", ""),
-            security_email=os.environ.get("SECURITY_EMAIL", ""),
-            user_notification_enabled=os.environ.get("USER_NOTIFICATION_ENABLED", "false").lower() == "true",
-            user_notification_override_email=os.environ.get("USER_NOTIFICATION_OVERRIDE_EMAIL", ""),
-            user_notification_bcc=os.environ.get("USER_NOTIFICATION_BCC", ""),
+            dashboard_url=_g("dashboard_url", "DASHBOARD_URL", ""),
+            security_email=_g("security_email", "SECURITY_EMAIL", ""),
+            user_notification_enabled=_g("user_notification_enabled", "USER_NOTIFICATION_ENABLED", "false").lower() == "true",
+            user_notification_override_email=_g("user_notification_override_email", "USER_NOTIFICATION_OVERRIDE_EMAIL", ""),
+            user_notification_bcc=_g("user_notification_bcc", "USER_NOTIFICATION_BCC", ""),
             user_notification_ai_provider=os.environ.get("USER_NOTIFICATION_AI_PROVIDER", ""),
             user_notification_ai_model=os.environ.get("USER_NOTIFICATION_AI_MODEL", ""),
             user_profile_cache_days=int(os.environ.get("USER_PROFILE_CACHE_DAYS", "7")),
             upn_domain=os.environ.get("UPN_DOMAIN", ""),
-            second_look_enabled=os.environ.get("SECOND_LOOK_ENABLED", "false").lower() == "true",
-            second_look_provider=os.environ.get("SECOND_LOOK_PROVIDER", "gemini"),
-            second_look_model=os.environ.get("SECOND_LOOK_MODEL", "gemini-3.1-pro-preview"),
+            second_look_enabled=_g("second_look_enabled", "SECOND_LOOK_ENABLED", "false").lower() == "true",
+            second_look_provider=_g("second_look_provider", "SECOND_LOOK_PROVIDER", "gemini"),
+            second_look_model=_g("second_look_model", "SECOND_LOOK_MODEL", "gemini-3.1-pro-preview"),
             transcription_enabled=os.environ.get("TRANSCRIPTION_ENABLED", "true").lower() == "true",
             max_av_file_size_bytes=int(os.environ.get("MAX_AV_FILE_SIZE_BYTES", "4294967296")),
             graph_transcript_timeout_seconds=int(os.environ.get("GRAPH_TRANSCRIPT_TIMEOUT_SECONDS", "30")),
@@ -172,8 +178,8 @@ class Config:
             max_event_retries=int(os.environ.get("MAX_EVENT_RETRIES", "3")),
             requeue_base_delay_seconds=int(os.environ.get("REQUEUE_BASE_DELAY_SECONDS", "60")),
             stuck_processing_timeout_minutes=int(os.environ.get("STUCK_PROCESSING_TIMEOUT_MINUTES", "30")),
-            max_concurrent_jobs=int(os.environ.get("MAX_CONCURRENT_JOBS", "5")),
-            max_concurrent_av_jobs=int(os.environ.get("MAX_CONCURRENT_AV_JOBS", "2")),
-            log_level=os.environ.get("LOG_LEVEL", "INFO"),
+            max_concurrent_jobs=int(_g("max_concurrent_jobs", "MAX_CONCURRENT_JOBS", "5")),
+            max_concurrent_av_jobs=int(_g("max_concurrent_av_jobs", "MAX_CONCURRENT_AV_JOBS", "2")),
+            log_level=_g("log_level", "LOG_LEVEL", "INFO"),
             prompt_template_dir=os.environ.get("PROMPT_TEMPLATE_DIR", "config/prompt_templates"),
         )

@@ -84,15 +84,23 @@ async def test_gemini() -> dict:
     url = (
         f"https://{location}-aiplatform.googleapis.com/v1/"
         f"projects/{project}/locations/{location}/publishers/google/models/"
-        f"{model}:generateContent?key={api_key}"
+        f"{model}:generateContent"
     )
     body = {"contents": [{"role": "user", "parts": [{"text": TEST_PROMPT}]}]}
 
     start = time.perf_counter()
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(url, json=body)
-            resp.raise_for_status()
+            resp = await client.post(url, params={"key": api_key}, json=body)
+        if resp.status_code >= 400:
+            latency = time.perf_counter() - start
+            return {
+                "provider": "gemini",
+                "model": model,
+                "status": "FAIL",
+                "latency": latency,
+                "error": f"HTTP {resp.status_code}",
+            }
         latency = time.perf_counter() - start
         data = resp.json()
         text = data["candidates"][0]["content"]["parts"][0]["text"]

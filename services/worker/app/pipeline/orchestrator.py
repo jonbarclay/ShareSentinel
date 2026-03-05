@@ -301,6 +301,7 @@ async def _process_single_file(
     skip_notification: bool = False,
     prefetched_metadata: Optional[Dict[str, Any]] = None,
     av_semaphore: Optional[asyncio.Semaphore] = None,
+    out_state: Optional[Dict[str, Any]] = None,
 ) -> Optional[AnalysisResponse]:
     """Run the file-processing pipeline (steps 3-11) for a single file.
 
@@ -309,6 +310,8 @@ async def _process_single_file(
       so we skip the Graph metadata fetch.
     - *skip_notification* suppresses per-file notifications (the folder handler
       sends a single summary notification instead).
+    - *out_state*, if provided, is populated with ``file_hash`` after
+      computation so the caller can use it (e.g. for folder content snapshots).
 
     Returns the AnalysisResponse, or None on unhandled failure.
     """
@@ -627,6 +630,8 @@ async def _process_single_file(
         # ----------------------------------------------------------------
         hasher = FileHasher()
         file_hash = hasher.compute_hash(downloaded_file)
+        if out_state is not None:
+            out_state["file_hash"] = file_hash
 
         reuse_match = await hasher.check_reuse(file_hash, file_hash_repo, config.hash_reuse_days)
         if reuse_match:
@@ -770,10 +775,17 @@ async def _handle_folder_share(
         )
         return
 
-    drive_id = folder_meta.get("parentReference", {}).get("driveId", "")
+    parent_ref = folder_meta.get("parentReference") or {}
+    drive_id = parent_ref.get("driveId", "")
     folder_item_id = folder_meta.get("id", "")
     folder_name = folder_meta.get("name", getattr(job, "file_name", ""))
     folder_web_url = folder_meta.get("webUrl", "")
+
+    await audit_repo.log(event_id, "folder_metadata_fetched", {
+        "drive_id": drive_id[:12] + "..." if drive_id else "",
+        "item_id": folder_item_id[:12] + "..." if folder_item_id else "",
+        "web_url_present": bool(folder_web_url),
+    })
 
     # Fetch sharing permissions for the folder (same as metadata pre-screen does for files)
     sharing_link_url = None
@@ -788,8 +800,14 @@ async def _handle_folder_share(
             )
             sharing_link_url = extract_sharing_link(permissions)
             sharing_links = extract_all_sharing_links(permissions)
+            await audit_repo.log(event_id, "folder_sharing_permissions", {
+                "total_permissions": len(permissions),
+                "sharing_links_found": len(sharing_links) if sharing_links else 0,
+                "sharing_link_url_found": bool(sharing_link_url),
+            })
         except Exception:
             logger.warning("[%s] Failed to fetch folder sharing permissions", event_id, exc_info=True)
+            await audit_repo.log(event_id, "folder_sharing_permissions_failed", {}, status="error")
 
         # Enroll sharing links into lifecycle tracking
         if sharing_links:
@@ -807,6 +825,12 @@ async def _handle_folder_share(
                 )
             except Exception:
                 logger.warning("[%s] Folder lifecycle enrollment failed", event_id, exc_info=True)
+    else:
+        logger.warning("[%s] Missing drive_id or item_id from metadata — cannot fetch sharing permissions", event_id)
+        await audit_repo.log(event_id, "folder_metadata_incomplete", {
+            "drive_id_present": bool(drive_id),
+            "item_id_present": bool(folder_item_id),
+        }, status="warning")
 
     # Persist Graph metadata on the event row
     await event_repo.update_event_metadata(event_id, {
@@ -928,6 +952,7 @@ async def _handle_folder_share(
             child_job = _DictJob(child_job_data)
 
             # 4d: Process the file
+            child_out_state: Dict[str, Any] = {}
             resp = await _process_single_file(
                 child_event_id, child_job, config,
                 event_repo, verdict_repo, file_hash_repo, audit_repo,
@@ -935,6 +960,7 @@ async def _handle_folder_share(
                 skip_notification=True,
                 prefetched_metadata=prefetched,
                 av_semaphore=av_semaphore,
+                out_state=child_out_state,
             )
 
             # 4e: Update counters
@@ -967,6 +993,7 @@ async def _handle_folder_share(
                 "summary": child_summary,
                 "status": "completed" if resp is not None else "failed",
                 "failure_reason": None if resp is not None else "processing_error",
+                "file_hash": child_out_state.get("file_hash"),
             })
 
         except Exception:
@@ -987,6 +1014,12 @@ async def _handle_folder_share(
                 await event_repo.update_event_status(child_event_id, "failed", failure_reason="unhandled_exception")
             except Exception:
                 pass
+
+    # ---- Step 4.5: Store content snapshot for future rescan ----
+    await _store_folder_content_snapshot(
+        db_pool, event_id, drive_id, folder_item_id, folder_name,
+        children, child_results,
+    )
 
     # ---- Step 5: Build and send summary notification ----
     summary_text = (
@@ -1057,6 +1090,93 @@ async def _handle_folder_share(
         "[%s] Folder processing complete: %d total, %d flagged, %d clean, %d failed",
         event_id, total_children, flagged_count, clean_count, failed_count,
     )
+
+
+async def _store_folder_content_snapshot(
+    db_pool: Any,
+    parent_event_id: str,
+    folder_drive_id: str,
+    folder_item_id: str,
+    folder_name: str,
+    children: list[Dict[str, Any]],
+    child_results: list[Dict[str, Any]],
+) -> None:
+    """Store a cTag-based content snapshot for future rescan change detection."""
+    try:
+        # Build maps from child file name to verdict tier and file hash
+        tier_by_name: Dict[str, str] = {}
+        hash_by_name: Dict[str, str] = {}
+        for cr in child_results:
+            if cr.get("escalation_tier"):
+                tier_by_name[cr["file_name"]] = cr["escalation_tier"]
+            if cr.get("file_hash"):
+                hash_by_name[cr["file_name"]] = cr["file_hash"]
+
+        async with db_pool.acquire() as conn:
+            for child in children:
+                parent_ref = child.get("parentReference", {})
+                child_name = child.get("name", "")
+                await conn.execute(
+                    """
+                    INSERT INTO folder_content_snapshots (
+                        parent_event_id, folder_drive_id, folder_item_id,
+                        child_item_id, child_name, child_size, child_mime_type,
+                        child_web_url, child_parent_path, child_ctag, child_etag,
+                        last_verdict_tier, file_hash
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                    ON CONFLICT (parent_event_id, child_item_id) DO UPDATE SET
+                        child_name = EXCLUDED.child_name,
+                        child_size = EXCLUDED.child_size,
+                        child_ctag = EXCLUDED.child_ctag,
+                        child_etag = EXCLUDED.child_etag,
+                        last_verdict_tier = EXCLUDED.last_verdict_tier,
+                        file_hash = COALESCE(EXCLUDED.file_hash, folder_content_snapshots.file_hash),
+                        last_seen_at = NOW(),
+                        last_scanned_at = NOW(),
+                        times_scanned = folder_content_snapshots.times_scanned + 1
+                    """,
+                    parent_event_id,
+                    folder_drive_id,
+                    folder_item_id,
+                    child.get("id", ""),
+                    child_name,
+                    child.get("size", 0),
+                    (child.get("file") or {}).get("mimeType", ""),
+                    child.get("webUrl", ""),
+                    parent_ref.get("path", ""),
+                    child.get("cTag", ""),
+                    child.get("eTag", ""),
+                    tier_by_name.get(child_name),
+                    hash_by_name.get(child_name),
+                )
+
+            # Create or update rescan state row
+            await conn.execute(
+                """
+                INSERT INTO folder_rescan_state (
+                    parent_event_id, folder_drive_id, folder_item_id,
+                    folder_name, total_files
+                ) VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (parent_event_id) DO UPDATE SET
+                    total_files = EXCLUDED.total_files,
+                    updated_at = NOW()
+                """,
+                parent_event_id,
+                folder_drive_id,
+                folder_item_id,
+                folder_name,
+                len(children),
+            )
+
+        logger.info(
+            "[%s] Stored content snapshot: %d files for folder '%s'",
+            parent_event_id, len(children), folder_name,
+        )
+    except Exception:
+        logger.warning(
+            "[%s] Failed to store folder content snapshot", parent_event_id,
+            exc_info=True,
+        )
 
 
 async def _handle_folder_share_fallback(
@@ -1775,6 +1895,34 @@ async def _record_and_notify(
         await FileHasher.store_hash(
             file_hash, event_id, cat_ids, file_hash_repo,
         )
+
+    # Update folder content snapshot for rescan jobs
+    rescan_parent = getattr(job, "rescan_parent_event_id", None)
+    child_item_id = metadata.get("item_id")
+    if rescan_parent and child_item_id:
+        try:
+            # Access pool via repo (established pattern, see metadata.py:132)
+            pool = verdict_repo._pool
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE folder_content_snapshots SET
+                        file_hash = COALESCE($3, file_hash),
+                        last_verdict_tier = $4,
+                        last_scanned_at = NOW()
+                    WHERE parent_event_id = $1
+                      AND child_item_id = $2
+                    """,
+                    rescan_parent,
+                    child_item_id,
+                    file_hash,
+                    escalation_tier,
+                )
+        except Exception:
+            logger.warning(
+                "[%s] Failed to update folder content snapshot for rescan parent=%s",
+                event_id, rescan_parent, exc_info=True,
+            )
 
     # Step 11: Notify if risky
     if notification_required and not skip_notification:

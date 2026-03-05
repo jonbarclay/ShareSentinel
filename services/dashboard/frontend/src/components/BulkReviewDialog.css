@@ -1,0 +1,139 @@
+.bulk-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.bulk-dialog {
+  background: var(--uvu-surface);
+  border-radius: var(--card-radius);
+  padding: 1.5rem;
+  width: 480px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.bulk-dialog-title {
+  margin: 0 0 0.75rem;
+  font-size: 1.1rem;
+  color: var(--uvu-text);
+}
+
+.bulk-dialog-count {
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
+  color: var(--uvu-text-secondary);
+}
+
+.bulk-dialog-warning {
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.75rem;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: #856404;
+  font-weight: 500;
+}
+
+.bulk-dialog-files {
+  max-height: 200px;
+  overflow-y: auto;
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--uvu-divider);
+  border-radius: 6px;
+}
+
+.bulk-dialog-file {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8rem;
+  color: var(--uvu-text);
+  border-bottom: 1px solid var(--uvu-divider);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bulk-dialog-file:last-child {
+  border-bottom: none;
+}
+
+.bulk-dialog-file.muted {
+  color: var(--uvu-text-muted);
+  font-style: italic;
+}
+
+.bulk-dialog-notes {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--uvu-border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  resize: vertical;
+  font-family: inherit;
+  margin-bottom: 1rem;
+  box-sizing: border-box;
+}
+
+.bulk-dialog-actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
+
+.bulk-dialog-cancel {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--uvu-border);
+  border-radius: 6px;
+  background: var(--uvu-surface);
+  color: var(--uvu-text);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.bulk-dialog-cancel:hover {
+  background: var(--uvu-hover);
+}
+
+.bulk-dialog-confirm {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.bulk-dialog-confirm:hover {
+  opacity: 0.85;
+}
+
+.bulk-dialog-confirm:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.bulk-dialog-results {
+  margin-bottom: 1rem;
+}
+
+.bulk-result-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.5rem 0;
+  font-size: 0.9rem;
+  border-bottom: 1px solid var(--uvu-divider);
+}
+
+.bulk-result-row.failed {
+  color: #c92a2a;
+}

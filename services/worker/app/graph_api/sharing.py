@@ -74,7 +74,7 @@ def extract_all_sharing_links(
         if not web_url:
             continue
         link_type = link.get("type", "view").lower()
-        label = scope.capitalize() + link_type.capitalize()
+        label = scope.capitalize() + " " + link_type.capitalize()
         expiration = perm.get("expirationDateTime")
         # Normalize the Graph sentinel "0001-01-01T00:00:00Z" to None
         if expiration and str(expiration).startswith("0001-01-01"):

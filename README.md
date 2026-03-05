@@ -12,6 +12,8 @@ The system polls the Microsoft Graph Audit Log Query API every 15 minutes for `A
 
 Beyond detection, ShareSentinel enforces a 180-day expiration policy on sharing links. Each anonymous or organization-wide link is enrolled in a lifecycle tracker that sends countdown notifications to file owners at scheduled milestones, then automatically removes the link via the Graph API at expiration. A web dashboard gives analysts a centralized view of events, AI verdicts, and sharing link status.
 
+![ShareSentinel Dashboard](ShareSentinel.png)
+
 ## Architecture
 
 ```
@@ -57,15 +59,179 @@ Beyond detection, ShareSentinel enforces a 180-day expiration policy on sharing 
 | **redis** | Job queue, deduplication cache, and rate limiting state. |
 | **postgres** | Event records, AI verdicts, analyst dispositions, sharing link lifecycle tracking, and audit poll state. |
 
+## Prerequisites
+
+- Docker Engine 27+ and Docker Compose v2+
+- Microsoft 365 tenant with a [Microsoft Entra ID app registration](#microsoft-entra-id-setup)
+- At least one AI provider key (Anthropic, OpenAI, or Gemini)
+- SMTP relay account for notifications
+- TLS certificate and key in `nginx/certs/` for production use
+
+## Microsoft Entra ID Setup
+
+ShareSentinel uses the Microsoft Graph API with application-level permissions to monitor sharing activity, download files, read audit logs, and remove expired sharing links. This section walks through the required Azure app registration and permission setup.
+
+> **Security Warning**
+>
+> The permissions required by ShareSentinel are broad and highly privileged:
+>
+> - **`Files.Read.All`** -- read access to all files across OneDrive and SharePoint in the tenant
+> - **`Sites.Read.All`** -- read access to all SharePoint site metadata and content
+> - **`Sites.FullControl.All`** -- full control of all SharePoint sites (used to remove sharing links)
+> - **`AuditLogsQuery.Read.All`** -- read access to all Microsoft 365 audit logs
+>
+> Use a dedicated, monitored app registration for ShareSentinel. Review permissions carefully, enable audit logging on the app registration itself, and restrict access to the client secret or certificate. Do not reuse this registration for other purposes.
+
+### Step 1: Create the App Registration
+
+1. Navigate to the [Azure Portal](https://portal.azure.com) > **Microsoft Entra ID** > **App registrations** > **New registration**.
+2. Name: `ShareSentinel` (or your preferred name).
+3. Supported account types: **Accounts in this organizational directory only** (single tenant).
+4. Redirect URI: leave blank for now (only needed if configuring [Dashboard SSO](#step-6-optional-dashboard-sso-oidc)).
+5. Click **Register**.
+6. Note the **Application (client) ID** and **Directory (tenant) ID** from the overview page -- you will need these for `.env`.
+
+### Step 2: Configure API Permissions
+
+Add the following **Application** permissions under **Microsoft Graph**:
+
+| Permission | Type | Purpose |
+|---|---|---|
+| `Files.Read.All` | Application | Download shared files for sensitivity analysis |
+| `Sites.Read.All` | Application | Read SharePoint site metadata, enumerate folder contents |
+| `Sites.FullControl.All` | Application | Remove expired sharing links (lifecycle enforcement) |
+| `AuditLogsQuery.Read.All` | Application | Poll Microsoft 365 audit log for sharing events |
+
+**To add permissions:**
+
+1. Go to your app registration > **API permissions** > **Add a permission**.
+2. Select **Microsoft Graph** > **Application permissions**.
+3. Search for and add each permission listed above.
+4. Click **Grant admin consent for [your tenant]** (requires Global Administrator or Privileged Role Administrator).
+
+If you plan to use the [Teams transcript pipeline](#step-5-optional-teams-transcript-access), also add these optional permissions now:
+
+| Permission | Type | Purpose |
+|---|---|---|
+| `OnlineMeetings.Read.All` | Application | Query Teams meetings to locate transcripts |
+| `OnlineMeetingTranscript.Read.All` | Application | Read meeting transcript content |
+
+### Step 3: Certificate Authentication
+
+ShareSentinel supports both client secret and certificate authentication. **Certificate authentication is recommended for production.**
+
+To use certificate authentication:
+
+1. Obtain a PFX (PKCS#12) certificate file with a password protecting the private key.
+2. Upload the certificate's **public key** to the app registration: go to **Certificates & secrets** > **Certificates** > **Upload certificate**, and upload the `.cer` or `.pem` public key file.
+3. Place the PFX file at the project root (default path: `./graph-api-cert.pfx`) or set the `AZURE_CERTIFICATE` environment variable to its path.
+4. Set `AZURE_CERTIFICATE_PASS` to the PFX password.
+
+At runtime, the app extracts the private key and computes the SHA-1 thumbprint automatically via MSAL. If no certificate is configured, the app falls back to the client secret (`AZURE_CLIENT_SECRET`).
+
+### Step 4: Grant Loop File Access (SharePoint Embedded)
+
+Microsoft Loop files are stored in SharePoint Embedded (SPE) containers owned by the Microsoft Loop application. Standard Graph API permissions are not sufficient to read Loop content -- you must explicitly grant your app read access to Loop's containers.
+
+Run the following in the **SharePoint Online Management Shell**:
+
+```powershell
+# Install the SharePoint Online Management Shell (if not already installed)
+Install-Module -Name Microsoft.Online.SharePoint.PowerShell -Force
+
+# Connect to SharePoint Online admin
+Connect-SPOService -Url https://yourtenant-admin.sharepoint.com
+
+# Grant ShareSentinel read access to Microsoft Loop's SPE containers
+# OwningApplicationId: Microsoft Loop's well-known app ID (do not change)
+# GuestApplicationId: Your ShareSentinel app registration's client ID
+Set-SPOApplicationPermission `
+    -OwningApplicationId 'a187e399-0c36-4b98-8f04-1edc167a0996' `
+    -GuestApplicationId '<your-sharesentinel-client-id>' `
+    -PermissionAppOnly ReadContent
+```
+
+> **Note:** The `OwningApplicationId` value `a187e399-0c36-4b98-8f04-1edc167a0996` is Microsoft Loop's well-known application ID -- do not change it. Replace `<your-sharesentinel-client-id>` with the Application (client) ID from Step 1.
+
+### Step 5 (Optional): Teams Transcript Access
+
+For organizations using the audio/video transcription pipeline, you need a Teams Application Access Policy in addition to the Graph API permissions added in [Step 2](#step-2-configure-api-permissions).
+
+```powershell
+# Install the Teams PowerShell module (if not already installed)
+Install-Module -Name MicrosoftTeams -Force -AllowClobber
+
+# Connect to Teams
+Connect-MicrosoftTeams
+
+# Create the application access policy
+New-CsApplicationAccessPolicy `
+    -Identity "ShareSentinel-TranscriptPolicy" `
+    -AppIds "<your-sharesentinel-client-id>" `
+    -Description "Allow ShareSentinel to read meeting transcripts"
+
+# Grant the policy globally (all users)
+Grant-CsApplicationAccessPolicy `
+    -PolicyName "ShareSentinel-TranscriptPolicy" `
+    -Global
+```
+
+> **Note:** After creating the policy, it can take **up to 30 minutes** to propagate across the Teams infrastructure.
+
+### Step 6 (Optional): Dashboard SSO (OIDC)
+
+The dashboard supports Entra ID single sign-on via OpenID Connect. You can use the same app registration or create a separate one.
+
+1. In the app registration, go to **Authentication** > **Add a platform** > **Web**.
+2. Set the redirect URI to `https://sharesentinel.yourorg.com/api/auth/callback` (adjust the domain to match your deployment).
+3. Under **Certificates & secrets**, create a **client secret** for the OIDC flow.
+4. Under **Token configuration** > **Add optional claim** > **ID** token, add `email` and `groups` claims.
+5. Create Entra ID security groups for access control (e.g., `ShareSentinel-Dashboard`, `ShareSentinel-Dashboard-Admin`) and assign users.
+6. Configure the `OIDC_*` environment variables in `.env` (see [.env.example](.env.example)).
+
 ## Quick Start
 
 ```bash
 git clone https://github.com/your-org/ShareSentinel.git
 cd ShareSentinel
 cp .env.example .env
-# Edit .env with your Azure AD, AI API keys, SMTP settings
+# Complete the Entra ID setup above, then edit .env with your
+# Azure AD credentials, AI API keys, and SMTP settings
 docker compose up --build -d
 ```
+
+## First-Run Verification
+
+```bash
+# Validate compose and env interpolation
+docker compose config >/dev/null
+
+# Check service health
+docker compose ps
+curl -k https://localhost/api/health
+```
+
+Expected health response:
+
+```json
+{"status":"ok"}
+```
+
+## Pre-Public-Repo Checklist
+
+Before converting the repository from private to public:
+
+1. Run the built-in audit script: `./scripts/pre_public_check.sh`
+2. Rotate all production credentials (Azure app secret/cert password, AI keys, SMTP/Jira tokens, Redis/Postgres passwords).
+3. Confirm no secret files are tracked:
+   - `.env`, certificate/private key files, database dumps, and backups should remain ignored.
+   - Run `git ls-files | rg -n '(\\.env|\\.pfx|\\.pem|\\.key|backup|dump)'` and verify there are no sensitive hits.
+4. Check git history for accidental token commits:
+   - Run `git log --all --full-history -- .env '*.pfx' '*.pem' '*.key'`.
+5. Review organization-specific strings:
+   - Replace internal domains/emails and branding if you do not want them in public source.
+6. Enable GitHub branch protection and keep security workflows enabled (`dependency-check.yml`, `security-scans.yml`).
+7. Publish a security contact process (already documented in `SECURITY.md`).
 
 ## Configuration
 
@@ -128,7 +294,7 @@ The lifecycle processor runs daily in the lifecycle-cron container.
 Detailed specifications for each component are in the [`docs/`](docs/) directory:
 
 1. [Architecture Overview](docs/01-architecture-overview.md) -- System architecture, data flow, container layout, technology rationale
-2. [Event Ingestion Service](docs/02-webhook-listener-service.md) -- Audit log poller, Graph API query flow, record-to-job mapping
+2. [Event Ingestion Service](docs/02-event-ingestion-service.md) -- Audit log poller, Graph API query flow, event-to-job mapping
 3. [File Processing Pipeline](docs/03-file-processing-pipeline.md) -- Worker orchestration: metadata pre-screen, download, classification, routing
 4. [Text Extraction Module](docs/04-text-extraction-module.md) -- Extraction strategies per file type, sampling logic, OCR fallback
 5. [Image Preprocessing Module](docs/05-image-preprocessing-module.md) -- Image resizing, compression, scanned PDF rendering, multimodal preparation

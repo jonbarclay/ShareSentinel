@@ -86,6 +86,59 @@ except ImportError:
             raise RuntimeError(f"Graph API token acquisition failed: {error}")
 
 
+async def enumerate_folder_children(
+    auth: GraphAuth,
+    drive_id: str,
+    folder_item_id: str,
+    recursive: bool = True,
+) -> list[dict]:
+    """Enumerate all files in a folder via Graph API.
+
+    Returns a flat list of driveItem dicts that have a ``file`` facet.
+    Includes cTag/eTag for change detection.
+    """
+    accumulator: list[dict] = []
+    headers = {"Authorization": f"Bearer {auth.get_access_token()}"}
+
+    async def _recurse(item_id: str) -> None:
+        url: str | None = (
+            f"{GRAPH_BASE}/drives/{drive_id}/items/{item_id}/children"
+            "?$top=200&$select=id,name,size,file,folder,parentReference,webUrl,cTag,eTag,lastModifiedDateTime"
+        )
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            while url:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+                for item in data.get("value", []):
+                    if "file" in item:
+                        accumulator.append(item)
+                    elif "folder" in item and recursive:
+                        await _recurse(item["id"])
+                url = data.get("@odata.nextLink")
+
+    await _recurse(folder_item_id)
+    logger.info(
+        "Enumerated %d files in drive=%s item=%s",
+        len(accumulator), drive_id[:12], folder_item_id[:12],
+    )
+    return accumulator
+
+
+async def get_item_permissions(
+    auth: GraphAuth,
+    drive_id: str,
+    item_id: str,
+) -> list[dict]:
+    """Fetch all permissions on a drive item."""
+    url = f"{GRAPH_BASE}/drives/{drive_id}/items/{item_id}/permissions"
+    headers = {"Authorization": f"Bearer {auth.get_access_token()}"}
+    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        return resp.json().get("value", [])
+
+
 async def remove_sharing_permission(
     auth: GraphAuth,
     drive_id: str,

@@ -97,20 +97,17 @@ class LifecycleNotifier:
                 days_remaining=days_remaining,
                 removal_date=removal_date,
                 is_removal_notice=is_removal_notice,
+                security_email=self.security_email or "security-team@example.com",
             )
 
-            # Build recipients: user TO, security BCC
+            # Build recipients: user TO only
             to_addresses: List[str] = [to_address]
             all_recipients = list(to_addresses)
-            if self.security_email:
-                all_recipients.append(self.security_email)
 
             msg = MIMEMultipart("alternative")
             msg["Subject"] = subject
             msg["From"] = self.from_address
             msg["To"] = ", ".join(to_addresses)
-            if self.security_email:
-                msg["Bcc"] = self.security_email
 
             # Plain text fallback
             if is_removal_notice:

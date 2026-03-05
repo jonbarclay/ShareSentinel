@@ -24,13 +24,56 @@ interface Event {
   [key: string]: unknown;
 }
 
-export default function EventTable({ events }: { events: Event[] }) {
+interface EventTableProps {
+  events: Event[];
+  selectable?: boolean;
+  selectedIds?: Set<string>;
+  onSelectionChange?: (ids: Set<string>) => void;
+}
+
+export default function EventTable({ events, selectable, selectedIds, onSelectionChange }: EventTableProps) {
   const nav = useNavigate();
+
+  const selectableIds = selectable
+    ? new Set(events.filter((e) => e.status === "completed" && e.escalation_tier != null).map((e) => e.event_id))
+    : new Set<string>();
+  const allSelected = selectableIds.size > 0 && [...selectableIds].every((id) => selectedIds?.has(id));
+  const someSelected = [...(selectedIds ?? [])].some((id) => selectableIds.has(id));
+
+  function toggleAll() {
+    if (!onSelectionChange || !selectedIds) return;
+    const next = new Set(selectedIds);
+    if (allSelected) {
+      selectableIds.forEach((id) => next.delete(id));
+    } else {
+      selectableIds.forEach((id) => next.add(id));
+    }
+    onSelectionChange(next);
+  }
+
+  function toggleOne(id: string) {
+    if (!onSelectionChange || !selectedIds) return;
+    const next = new Set(selectedIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onSelectionChange(next);
+  }
+
   return (
     <div className="event-table-container">
       <table className="event-table">
         <thead>
           <tr>
+            {selectable && (
+              <th className="cell-checkbox">
+                <input
+                  type="checkbox"
+                  ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
+                  checked={allSelected}
+                  onChange={toggleAll}
+                />
+              </th>
+            )}
             <th>File</th>
             <th>User</th>
             <th>Type</th>
@@ -46,8 +89,20 @@ export default function EventTable({ events }: { events: Event[] }) {
             <tr
               key={e.event_id}
               onClick={() => nav(`/events/${e.event_id}`)}
-              className="event-row"
+              className={`event-row${selectedIds?.has(e.event_id) ? " selected" : ""}`}
             >
+              {selectable && (
+                <td className="cell-checkbox">
+                  {selectableIds.has(e.event_id) ? (
+                    <input
+                      type="checkbox"
+                      checked={selectedIds?.has(e.event_id) ?? false}
+                      onChange={() => toggleOne(e.event_id)}
+                      onClick={(ev) => ev.stopPropagation()}
+                    />
+                  ) : null}
+                </td>
+              )}
               <td className="cell-filename" title={e.file_name || String(e.object_id ?? "") || "—"}>
                 {e.file_name || (e.object_id ? decodeURIComponent(String(e.object_id).split("/").pop() || "") : "") || "—"}
                 {!e.file_name && e.item_type === "Folder" && (

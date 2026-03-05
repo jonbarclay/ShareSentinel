@@ -4,6 +4,12 @@
 
 This document specifies the Docker Compose setup, Dockerfiles, environment variables, health checks, monitoring, and operational considerations for running ShareSentinel.
 
+## Important
+
+`docker-compose.yml` in the repository root is the authoritative runtime configuration.
+Use this document for architecture/operations guidance, but prefer the compose file for
+exact service definitions, environment variable wiring, and security settings.
+
 ## Docker Compose
 
 ```yaml

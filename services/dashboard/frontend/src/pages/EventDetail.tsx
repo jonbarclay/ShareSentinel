@@ -341,9 +341,8 @@ export default function EventDetail() {
                 </div>
               );
             }
-            // Fallback: show sharing_link_url or object_id as the sharing link
-            const fallbackUrl = e.sharing_link_url || e.object_id;
-            if (fallbackUrl && String(fallbackUrl).startsWith("http")) {
+            // Fallback: show sharing_link_url if available (actual sharing link)
+            if (e.sharing_link_url && String(e.sharing_link_url).startsWith("http")) {
               const scope = e.sharing_type || e.sharing_scope || "Unknown";
               return (
                 <div style={{ marginTop: 10 }}>
@@ -358,8 +357,19 @@ export default function EventDetail() {
                       fontSize: "0.72rem",
                       fontWeight: 600,
                     }}>{String(scope)}</span>
-                    <a href={String(fallbackUrl)} target="_blank" rel="noopener noreferrer"
-                      style={{ color: uvu.greenL1, fontSize: "0.85rem", wordBreak: "break-all" }}>{String(fallbackUrl)}</a>
+                    <a href={String(e.sharing_link_url)} target="_blank" rel="noopener noreferrer"
+                      style={{ color: uvu.greenL1, fontSize: "0.85rem", wordBreak: "break-all" }}>{String(e.sharing_link_url)}</a>
+                  </div>
+                </div>
+              );
+            }
+            // No sharing link available — show a note
+            if (!e.sharing_link_url && (e.sharing_type || e.sharing_scope)) {
+              return (
+                <div style={{ marginTop: 10 }}>
+                  <span style={labelCss}>Sharing Link</span>
+                  <div style={{ marginTop: 6, fontSize: "0.85rem", color: uvu.textMuted, fontStyle: "italic" }}>
+                    Not available — sharing permissions could not be retrieved from Graph API
                   </div>
                 </div>
               );

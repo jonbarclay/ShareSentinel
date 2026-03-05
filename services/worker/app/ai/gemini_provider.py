@@ -8,12 +8,20 @@ from typing import Any, Dict, List
 
 import httpx
 
+from ..utils.log_sanitizer import sanitize_response_body
 from .base_provider import AnalysisRequest, AnalysisResponse, BaseAIProvider
 from .exceptions import TransientAIError
 from .prompt_manager import PromptManager
 from .response_parser import parse_ai_response
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_http_error_message(exc: httpx.HTTPStatusError) -> str:
+    """Return an error string safe for logs and DB fields."""
+    status = exc.response.status_code
+    body = sanitize_response_body(exc.response.text, max_length=200)
+    return f"HTTP {status}: {body}" if body else f"HTTP {status}"
 
 
 class GeminiProvider(BaseAIProvider):
@@ -69,8 +77,8 @@ class GeminiProvider(BaseAIProvider):
                 },
             }
 
-            url = f"{self._base_url}/{self.model_name}:generateContent?key={self._api_key}"
-            resp = await self._http.post(url, json=body)
+            url = f"{self._base_url}/{self.model_name}:generateContent"
+            resp = await self._http.post(url, params={"key": self._api_key}, json=body)
             resp.raise_for_status()
             data = resp.json()
 
@@ -111,20 +119,21 @@ class GeminiProvider(BaseAIProvider):
                 risk_score=parsed.get("risk_score", 0),
             )
         except httpx.HTTPStatusError as exc:
+            safe_error = _safe_http_error_message(exc)
             if exc.response.status_code == 429 or exc.response.status_code >= 500:
-                logger.warning("Gemini transient HTTP %d: %s", exc.response.status_code, exc)
-                raise TransientAIError(str(exc)) from exc
-            logger.exception("Gemini analysis failed (HTTP %d)", exc.response.status_code)
+                logger.warning("Gemini transient error: %s", safe_error)
+                raise TransientAIError(safe_error) from exc
+            logger.error("Gemini analysis failed: %s", safe_error)
             return AnalysisResponse(
                 categories=[], context="mixed", summary="", recommendation="",
                 raw_response="", provider="gemini", model=self.model_name,
                 input_tokens=0, output_tokens=0, estimated_cost_usd=0,
                 processing_time_seconds=time.time() - start_time,
-                success=False, error=str(exc),
+                success=False, error=safe_error,
             )
-        except (httpx.TimeoutException, httpx.ConnectError) as exc:
-            logger.warning("Gemini transient error: %s", exc)
-            raise TransientAIError(str(exc)) from exc
+        except (httpx.TimeoutException, httpx.ConnectError):
+            logger.warning("Gemini transient transport error")
+            raise TransientAIError("Gemini transport timeout/connectivity failure")
         except Exception as exc:
             logger.exception("Gemini analysis failed")
             return AnalysisResponse(
