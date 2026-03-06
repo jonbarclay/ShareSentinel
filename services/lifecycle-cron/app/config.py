@@ -37,11 +37,11 @@ class LifecycleConfig:
     audit_poll_interval_minutes: int = 15
     audit_poll_operations: str = "AnonymousLinkCreated,CompanyLinkCreated"
 
-    # Allowlist enforcement
-    allowlist_enforcement_enabled: bool = False
-    allowlist_enforcement_interval_hours: int = 168  # 7 days
-    allowlist_enabled_capability: str = "ExternalUserAndGuestSharing"
-    allowlist_disabled_capability: str = "ExternalUserSharingOnly"
+    # Site policy enforcement (dual: visibility + sharing)
+    site_policy_enabled: bool = False
+    site_policy_interval_hours: int = 24
+    site_policy_enabled_sharing_capability: str = "ExternalUserAndGuestSharing"
+    site_policy_disabled_sharing_capability: str = "ExternalUserSharingOnly"
     sharepoint_admin_url: str = ""
 
     # Folder rescan
@@ -83,17 +83,17 @@ class LifecycleConfig:
                 "AUDIT_POLL_OPERATIONS",
                 "AnonymousLinkCreated,CompanyLinkCreated",
             ),
-            allowlist_enforcement_enabled=os.environ.get(
-                "ALLOWLIST_ENFORCEMENT_ENABLED", "false"
+            site_policy_enabled=os.environ.get(
+                "SITE_POLICY_ENABLED", "false"
             ).lower() == "true",
-            allowlist_enforcement_interval_hours=int(
-                os.environ.get("ALLOWLIST_ENFORCEMENT_INTERVAL_HOURS", "168")
+            site_policy_interval_hours=int(
+                os.environ.get("SITE_POLICY_INTERVAL_HOURS", "24")
             ),
-            allowlist_enabled_capability=os.environ.get(
-                "ALLOWLIST_ENABLED_CAPABILITY", "ExternalUserAndGuestSharing"
+            site_policy_enabled_sharing_capability=os.environ.get(
+                "SITE_POLICY_ENABLED_SHARING_CAPABILITY", "ExternalUserAndGuestSharing"
             ),
-            allowlist_disabled_capability=os.environ.get(
-                "ALLOWLIST_DISABLED_CAPABILITY", "ExternalUserSharingOnly"
+            site_policy_disabled_sharing_capability=os.environ.get(
+                "SITE_POLICY_DISABLED_SHARING_CAPABILITY", "ExternalUserSharingOnly"
             ),
             sharepoint_admin_url=os.environ.get("SHAREPOINT_ADMIN_URL", ""),
             folder_rescan_enabled=_g(

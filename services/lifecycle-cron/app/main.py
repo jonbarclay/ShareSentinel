@@ -1,9 +1,10 @@
 """Entry point for the lifecycle cron service.
 
-Runs up to three concurrent loops:
+Runs up to four concurrent loops:
 1. Lifecycle processor — checks sharing link expiry milestones (daily)
 2. Audit log poller — queries Graph API audit logs for new sharing events (every 15m)
-3. Allowlist enforcer — enforces anonymous sharing policy on SharePoint sites (weekly + manual)
+3. Site policy enforcer — enforces visibility + sharing policies on SharePoint sites (daily + manual)
+4. Folder rescan — re-checks shared folders for new/modified files (weekly)
 """
 
 from __future__ import annotations
@@ -38,43 +39,94 @@ async def lifecycle_loop(
         await asyncio.sleep(interval_seconds)
 
 
-async def allowlist_enforcement_loop(
+async def site_policy_loop(
     db_pool: asyncpg.Pool,
+    auth: GraphAuth,
     config: LifecycleConfig,
 ) -> None:
-    """Check for manual triggers every 60s, run weekly scheduled enforcement."""
+    """Daily site policy scanner + enforcer (replaces allowlist_enforcement_loop).
+
+    Polls Redis every 60s for manual triggers, runs scheduled scans at configured interval.
+    Handles both visibility (Public->Private) and sharing (anonymous link) enforcement.
+    """
     import json
 
     import redis.asyncio as aioredis
 
-    from .allowlist_enforcer import run_enforcement
+    from .site_policy_scanner import (
+        apply_sharing_for_site,
+        apply_visibility_for_group,
+        revoke_sharing_for_site,
+        revoke_visibility_for_group,
+        run_site_policy_scan,
+    )
 
     redis_client = aioredis.from_url(config.redis_url)
-    interval_seconds = config.allowlist_enforcement_interval_hours * 3600
+    interval_seconds = config.site_policy_interval_hours * 3600
 
     logger.info(
-        "Allowlist enforcement loop starting (interval=%dh)",
-        config.allowlist_enforcement_interval_hours,
+        "Site policy loop starting (interval=%dh)",
+        config.site_policy_interval_hours,
     )
 
     while True:
         try:
-            # 1. Check Redis for manual trigger
-            trigger = await redis_client.lpop("sharesentinel:allowlist_sync_trigger")
+            # 1a. Check Redis for targeted actions (add-to-allowlist triggers)
+            action_msg = await redis_client.lpop("sharesentinel:site_policy_action")
+            if action_msg:
+                action_data = json.loads(action_msg)
+                action_type = action_data.get("action")
+                logger.info("Site policy action received: %s", action_data)
+
+                if action_type == "set_public":
+                    await apply_visibility_for_group(
+                        db_pool, auth,
+                        group_id=action_data["group_id"],
+                        group_display_name=action_data.get("group_display_name", ""),
+                        site_url=action_data.get("site_url", ""),
+                        triggered_by=action_data.get("triggered_by", "unknown"),
+                    )
+                elif action_type == "enable_sharing":
+                    await apply_sharing_for_site(
+                        db_pool, config,
+                        site_url=action_data["site_url"],
+                        site_display_name=action_data.get("site_display_name", ""),
+                        triggered_by=action_data.get("triggered_by", "unknown"),
+                    )
+                elif action_type == "set_private":
+                    await revoke_visibility_for_group(
+                        db_pool, auth,
+                        group_id=action_data["group_id"],
+                        group_display_name=action_data.get("group_display_name", ""),
+                        site_url=action_data.get("site_url", ""),
+                        triggered_by=action_data.get("triggered_by", "unknown"),
+                    )
+                elif action_type == "disable_sharing":
+                    await revoke_sharing_for_site(
+                        db_pool, config,
+                        site_url=action_data["site_url"],
+                        site_display_name=action_data.get("site_display_name", ""),
+                        triggered_by=action_data.get("triggered_by", "unknown"),
+                    )
+                else:
+                    logger.warning("Unknown site policy action: %s", action_type)
+
+                continue  # Check for more actions before sleeping
+
+            # 1b. Check Redis for manual full scan trigger
+            trigger = await redis_client.lpop("sharesentinel:site_policy_trigger")
             if trigger:
                 data = json.loads(trigger)
-                sync_id = data["sync_id"]
-                logger.info("Manual allowlist sync triggered (sync_id=%d)", sync_id)
-                await run_enforcement(
-                    db_pool, config, sync_id=sync_id, full_enforcement=False,
-                )
+                scan_id = data["scan_id"]
+                logger.info("Manual site policy scan triggered (scan_id=%d)", scan_id)
+                await run_site_policy_scan(db_pool, auth, config, scan_id=scan_id)
                 continue  # Check for more triggers before sleeping
 
             # 2. Check if scheduled run is due
             async with db_pool.acquire() as conn:
                 last_scheduled = await conn.fetchrow(
                     """
-                    SELECT completed_at FROM site_allowlist_syncs
+                    SELECT completed_at FROM site_policy_scans
                     WHERE trigger_type = 'scheduled'
                       AND status = 'completed'
                     ORDER BY completed_at DESC
@@ -94,20 +146,18 @@ async def allowlist_enforcement_loop(
                 async with db_pool.acquire() as conn:
                     row = await conn.fetchrow(
                         """
-                        INSERT INTO site_allowlist_syncs
+                        INSERT INTO site_policy_scans
                             (trigger_type, status)
                         VALUES ('scheduled', 'pending')
                         RETURNING id
                         """
                     )
-                sync_id = row["id"]
-                logger.info("Scheduled allowlist enforcement starting (sync_id=%d)", sync_id)
-                await run_enforcement(
-                    db_pool, config, sync_id=sync_id, full_enforcement=True,
-                )
+                scan_id = row["id"]
+                logger.info("Scheduled site policy scan starting (scan_id=%d)", scan_id)
+                await run_site_policy_scan(db_pool, auth, config, scan_id=scan_id)
 
         except Exception:
-            logger.exception("Error in allowlist enforcement loop")
+            logger.exception("Error in site policy loop")
 
         await asyncio.sleep(60)  # Poll every 60s for manual triggers
 
@@ -221,22 +271,22 @@ async def main() -> None:
     else:
         logger.info("Folder rescan disabled")
 
-    if config.allowlist_enforcement_enabled:
+    if config.site_policy_enabled:
         if not config.redis_url:
             logger.error(
-                "ALLOWLIST_ENFORCEMENT_ENABLED=true but REDIS_URL is not set — "
-                "skipping allowlist enforcement"
+                "SITE_POLICY_ENABLED=true but REDIS_URL is not set — "
+                "skipping site policy enforcement"
             )
         elif not config.sharepoint_admin_url:
             logger.error(
-                "ALLOWLIST_ENFORCEMENT_ENABLED=true but SHAREPOINT_ADMIN_URL is not set — "
-                "skipping allowlist enforcement"
+                "SITE_POLICY_ENABLED=true but SHAREPOINT_ADMIN_URL is not set — "
+                "skipping site policy enforcement"
             )
         else:
-            logger.info("Allowlist enforcement enabled")
-            tasks.append(allowlist_enforcement_loop(db_pool, config))
+            logger.info("Site policy enforcement enabled")
+            tasks.append(site_policy_loop(db_pool, auth, config))
     else:
-        logger.info("Allowlist enforcement disabled")
+        logger.info("Site policy enforcement disabled")
 
     try:
         await asyncio.gather(*tasks)

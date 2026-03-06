@@ -6,6 +6,7 @@ Falls back to a local implementation if the shared package is not installed.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Dict, Optional, Union
 
@@ -123,6 +124,134 @@ async def enumerate_folder_children(
         len(accumulator), drive_id[:12], folder_item_id[:12],
     )
     return accumulator
+
+
+async def enumerate_m365_groups(auth: GraphAuth) -> list[dict]:
+    """Fetch all Unified (M365) groups with visibility info.
+
+    Returns list of dicts with keys: id, displayName, visibility,
+    resourceProvisioningOptions.
+    """
+    headers = {"Authorization": f"Bearer {auth.get_access_token()}"}
+    initial_params = {
+        "$filter": "groupTypes/any(c:c eq 'Unified')",
+        "$select": "id,displayName,visibility,mail,resourceProvisioningOptions",
+        "$top": "999",
+    }
+    groups: list[dict] = []
+
+    url: str | None = f"{GRAPH_BASE}/groups"
+    first_page = True
+    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        while url:
+            resp = await client.get(
+                url,
+                headers=headers,
+                params=initial_params if first_page else None,
+            )
+            first_page = False
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", "10"))
+                logger.warning("Graph 429 — sleeping %ds", retry_after)
+                await asyncio.sleep(retry_after)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            groups.extend(data.get("value", []))
+            url = data.get("@odata.nextLink")
+
+    logger.info("Enumerated %d M365 groups", len(groups))
+    return groups
+
+
+async def batch_get_group_sites(
+    auth: GraphAuth,
+    group_ids: list[str],
+) -> dict[str, str]:
+    """Resolve group IDs to SharePoint site URLs using Graph batch API.
+
+    Returns dict mapping group_id -> site_url.
+    Processes in batches of 20 (Graph batch limit).
+    """
+    result: dict[str, str] = {}
+    headers = {
+        "Authorization": f"Bearer {auth.get_access_token()}",
+        "Content-Type": "application/json",
+    }
+
+    for i in range(0, len(group_ids), 20):
+        chunk = group_ids[i : i + 20]
+        requests = [
+            {
+                "id": gid,
+                "method": "GET",
+                "url": f"/groups/{gid}/sites/root?$select=id,webUrl",
+            }
+            for gid in chunk
+        ]
+        batch_body = {"requests": requests}
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            resp = await client.post(
+                f"{GRAPH_BASE}/$batch",
+                headers=headers,
+                json=batch_body,
+            )
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", "10"))
+                logger.warning("Graph batch 429 — sleeping %ds", retry_after)
+                await asyncio.sleep(retry_after)
+                resp = await client.post(
+                    f"{GRAPH_BASE}/$batch",
+                    headers=headers,
+                    json=batch_body,
+                )
+            resp.raise_for_status()
+            data = resp.json()
+
+        for item in data.get("responses", []):
+            if item.get("status") == 200:
+                body = item.get("body", {})
+                web_url = body.get("webUrl", "")
+                if web_url:
+                    result[item["id"]] = web_url
+            else:
+                logger.debug(
+                    "Batch site lookup failed for group %s: %s",
+                    item.get("id"), item.get("status"),
+                )
+
+        await asyncio.sleep(0.2)  # Rate limit between batches
+
+    logger.info("Resolved %d/%d group site URLs", len(result), len(group_ids))
+    return result
+
+
+async def set_group_visibility(
+    auth: GraphAuth,
+    group_id: str,
+    visibility: str,
+) -> None:
+    """Set an M365 group's visibility (e.g., 'Private').
+
+    Uses PATCH /groups/{group_id}.
+    """
+    headers = {
+        "Authorization": f"Bearer {auth.get_access_token()}",
+        "Content-Type": "application/json",
+    }
+    url = f"{GRAPH_BASE}/groups/{group_id}"
+
+    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        resp = await client.patch(url, headers=headers, json={"visibility": visibility})
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", "10"))
+            logger.warning("Graph 429 on group PATCH — sleeping %ds", retry_after)
+            await asyncio.sleep(retry_after)
+            resp = await client.patch(url, headers=headers, json={"visibility": visibility})
+        resp.raise_for_status()
+
+    logger.info("Set group %s visibility to %s", group_id, visibility)
 
 
 async def get_item_permissions(
