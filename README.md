@@ -10,7 +10,11 @@ ShareSentinel is a containerized system that monitors OneDrive and SharePoint fo
 
 The system polls the Microsoft Graph Audit Log Query API every 15 minutes for `AnonymousLinkCreated` and `CompanyLinkCreated` events. Events are deduplicated via Redis and processed by a worker service that handles up to 5 jobs concurrently. The worker supports multiple processing paths depending on file type: text extraction for documents, multimodal analysis for images, audio/video transcription, and browser-based inspection for delegated content types like Loop, OneNote, and Whiteboard.
 
-Beyond detection, ShareSentinel enforces a 180-day expiration policy on sharing links. Each anonymous or organization-wide link is enrolled in a lifecycle tracker that sends countdown notifications to file owners at scheduled milestones, then automatically removes the link via the Graph API at expiration. A web dashboard gives analysts a centralized view of events, AI verdicts, and sharing link status.
+Beyond detection, ShareSentinel enforces a 180-day expiration policy on sharing links. Each anonymous or organization-wide link is enrolled in a lifecycle tracker that sends countdown notifications to file owners at scheduled milestones, then automatically removes the link via the Graph API at expiration.
+
+ShareSentinel also enforces site-level sharing policies. A daily scanner checks all M365 groups and SharePoint sites against configurable allow lists. Groups set to Public that are not allow-listed are automatically switched to Private. Sites with anonymous sharing enabled that are not allow-listed have their sharing capability downgraded. Administrators manage allow lists through the dashboard, and changes trigger immediate enforcement.
+
+A web dashboard gives analysts a centralized view of events, AI verdicts, sharing link status, and site policy enforcement history.
 
 ![ShareSentinel Dashboard](ShareSentinel.png)
 
@@ -53,11 +57,11 @@ Beyond detection, ShareSentinel enforces a 180-day expiration policy on sharing 
 
 | Container | Description |
 |---|---|
-| **lifecycle-cron** | Runs two concurrent loops: (1) audit log poller that queries the Graph API every 15 minutes for new sharing events and pushes them to the Redis queue, and (2) lifecycle processor that checks sharing link expiry milestones daily, sends countdown notifications, and removes expired links. |
+| **lifecycle-cron** | Runs up to four concurrent loops: (1) audit log poller that queries the Graph API every 15 minutes for new sharing events and pushes them to the Redis queue, (2) lifecycle processor that checks sharing link expiry milestones daily, sends countdown notifications, and removes expired links, (3) site policy scanner that enforces M365 group visibility and SharePoint anonymous sharing policies daily, and (4) folder rescan that re-checks shared folders for new/modified files weekly. |
 | **worker** | Python service that pulls jobs from Redis (up to 5 concurrently), orchestrates the full processing pipeline: metadata pre-screen, download, text extraction, AI analysis, lifecycle enrollment, notification, and cleanup. |
-| **dashboard** | React + FastAPI web UI for analysts to review events, verdicts, statistics, and process delegated content types via the Inspection Queue. |
+| **dashboard** | React + FastAPI web UI for analysts to review events, verdicts, statistics, manage site policy allow lists (sharing + visibility), and process delegated content types via the Inspection Queue. |
 | **redis** | Job queue, deduplication cache, and rate limiting state. |
-| **postgres** | Event records, AI verdicts, analyst dispositions, sharing link lifecycle tracking, and audit poll state. |
+| **postgres** | Event records, AI verdicts, analyst dispositions, sharing link lifecycle tracking, audit poll state, site policy allow lists, and site policy enforcement history. |
 
 ## Prerequisites
 
@@ -78,6 +82,7 @@ ShareSentinel uses the Microsoft Graph API with application-level permissions to
 > - **`Files.Read.All`** -- read access to all files across OneDrive and SharePoint in the tenant
 > - **`Sites.Read.All`** -- read access to all SharePoint site metadata and content
 > - **`Sites.FullControl.All`** -- full control of all SharePoint sites (used to remove sharing links)
+> - **`Group.ReadWrite.All`** -- read/write access to all M365 groups (used to enforce visibility policy)
 > - **`AuditLogsQuery.Read.All`** -- read access to all Microsoft 365 audit logs
 >
 > Use a dedicated, monitored app registration for ShareSentinel. Review permissions carefully, enable audit logging on the app registration itself, and restrict access to the client secret or certificate. Do not reuse this registration for other purposes.
@@ -100,6 +105,7 @@ Add the following **Application** permissions under **Microsoft Graph**:
 | `Files.Read.All` | Application | Download shared files for sensitivity analysis |
 | `Sites.Read.All` | Application | Read SharePoint site metadata, enumerate folder contents |
 | `Sites.FullControl.All` | Application | Remove expired sharing links (lifecycle enforcement) |
+| `Group.ReadWrite.All` | Application | Enforce M365 group visibility policy (set Public groups to Private) |
 | `AuditLogsQuery.Read.All` | Application | Poll Microsoft 365 audit log for sharing events |
 
 **To add permissions:**
@@ -239,7 +245,7 @@ All configuration is via environment variables. See [.env.example](.env.example)
 
 | Category | Key Variables | Description |
 |---|---|---|
-| **Azure AD** | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | App registration for Microsoft Graph API access. Requires `Files.Read.All`, `Sites.Read.All`, `Sites.FullControl.All`, and `AuditLogsQuery.Read.All` permissions. |
+| **Azure AD** | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | App registration for Microsoft Graph API access. Requires `Files.Read.All`, `Sites.Read.All`, `Sites.FullControl.All`, `Group.ReadWrite.All`, and `AuditLogsQuery.Read.All` permissions. |
 | **AI Providers** | `AI_PROVIDER`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` | AI provider selection and API keys. Supports `anthropic`, `openai`, and `gemini`. |
 | **SMTP** | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` | Email server for analyst alerts and lifecycle countdown notifications. |
 | **PostgreSQL** | `DATABASE_URL` | Connection string for the PostgreSQL database. |
@@ -281,6 +287,32 @@ All anonymous and organization-wide sharing links are enrolled in a 180-day life
 
 The lifecycle processor runs daily in the lifecycle-cron container.
 
+## Site Policy Enforcement
+
+ShareSentinel enforces two site-level policies via allow lists managed through the dashboard:
+
+### Visibility Policy (M365 Groups)
+
+All M365 Unified groups are expected to be Private. A daily scan enumerates all groups via the Graph API, identifies Public groups not on the visibility allow list, and sets them to Private via `PATCH /groups/{id}`. Requires the `Group.ReadWrite.All` application permission.
+
+### Sharing Capability Policy (SharePoint Sites)
+
+All SharePoint sites are expected to block anonymous sharing. A daily scan enumerates all site collections via the SharePoint CSOM tenant admin API, identifies sites with `SharingCapability = ExternalUserAndGuestSharing` that are not on the sharing allow list, and downgrades them to `ExternalUserSharingOnly`. Requires the `SHAREPOINT_ADMIN_URL` environment variable and certificate-based auth to the SharePoint admin site.
+
+### Immediate Enforcement
+
+When an administrator adds or removes a site from either allow list via the dashboard, the change is applied immediately (not waiting for the next daily scan). The dashboard pushes an action to Redis, and the lifecycle-cron container picks it up within 60 seconds.
+
+### Configuration
+
+| Variable | Description | Default |
+|---|---|---|
+| `SITE_POLICY_ENABLED` | Enable/disable site policy enforcement | `false` |
+| `SITE_POLICY_INTERVAL_HOURS` | Hours between scheduled scans | `24` |
+| `SITE_POLICY_ENABLED_SHARING_CAPABILITY` | Capability set on allow-listed sites | `ExternalUserAndGuestSharing` |
+| `SITE_POLICY_DISABLED_SHARING_CAPABILITY` | Capability set on non-allow-listed sites | `ExternalUserSharingOnly` |
+| `SHAREPOINT_ADMIN_URL` | SharePoint tenant admin URL | _(required)_ |
+
 ## Key Design Decisions
 
 - **Text extraction first, multimodal as fallback.** Text-based AI calls are significantly cheaper and often more accurate. Multimodal analysis is reserved for actual images and documents where text extraction fails.
@@ -288,6 +320,8 @@ The lifecycle processor runs daily in the lifecycle-cron container.
 - **AI provider is swappable via configuration.** Switching between Anthropic Claude, OpenAI, and Google Gemini requires only a configuration change. All providers implement the same interface and return the same structured output format.
 - **Deterministic escalation.** Any Tier 1 or Tier 2 sensitivity category triggers analyst notification. There is no configurable threshold or scoring -- the system either escalates or it does not.
 - **Folder shares are always flagged.** Even if all current child files are benign, the broad sharing scope means future files will inherit it, so analysts are always notified.
+- **Site policies use dual allow lists.** Visibility (Public/Private) and sharing capability (anonymous link enablement) are separate concerns with separate allow lists. The Graph API handles group visibility changes, while the SharePoint CSOM tenant admin API handles per-site sharing capability (because Graph doesn't support it).
+- **Allow list changes are enforced immediately.** Adding or removing a site from an allow list triggers an immediate enforcement action via Redis, rather than waiting for the next daily scan.
 
 ## Documentation
 

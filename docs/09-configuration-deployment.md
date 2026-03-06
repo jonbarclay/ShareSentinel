@@ -148,6 +148,13 @@ services:
       - AUDIT_POLL_ENABLED=${AUDIT_POLL_ENABLED:-true}
       - AUDIT_POLL_INTERVAL_MINUTES=${AUDIT_POLL_INTERVAL_MINUTES:-15}
 
+      # Site policy enforcement (dual: visibility + sharing)
+      - SITE_POLICY_ENABLED=${SITE_POLICY_ENABLED:-false}
+      - SITE_POLICY_INTERVAL_HOURS=${SITE_POLICY_INTERVAL_HOURS:-24}
+      - SITE_POLICY_ENABLED_SHARING_CAPABILITY=${SITE_POLICY_ENABLED_SHARING_CAPABILITY:-ExternalUserAndGuestSharing}
+      - SITE_POLICY_DISABLED_SHARING_CAPABILITY=${SITE_POLICY_DISABLED_SHARING_CAPABILITY:-ExternalUserSharingOnly}
+      - SHAREPOINT_ADMIN_URL=${SHAREPOINT_ADMIN_URL}
+
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
@@ -319,6 +326,14 @@ AUDIT_POLL_INTERVAL_MINUTES=15
 LIFECYCLE_CHECK_INTERVAL_HOURS=24
 LIFECYCLE_MAX_DAYS=180
 
+# --- Site Policy Enforcement (dual: visibility + anonymous sharing) ---
+# Enable daily enforcement of both site visibility and anonymous sharing policies
+SITE_POLICY_ENABLED=false
+SITE_POLICY_INTERVAL_HOURS=24
+SITE_POLICY_ENABLED_SHARING_CAPABILITY=ExternalUserAndGuestSharing
+SITE_POLICY_DISABLED_SHARING_CAPABILITY=ExternalUserSharingOnly
+SHAREPOINT_ADMIN_URL=https://yourtenant-admin.sharepoint.com
+
 # --- Notifications ---
 # Comma-separated: email,jira
 NOTIFICATION_CHANNELS=email
@@ -420,7 +435,7 @@ logging:
 1. **PostgreSQL** starts first and runs `init_db.sql` to create the schema.
 2. **Redis** starts and passes its health check.
 3. **Worker** starts after both Redis and PostgreSQL are healthy. Runs database migrations on startup. Tests connections to Redis, PostgreSQL, and Graph API (token acquisition). Starts the main processing loop with concurrent job handling.
-4. **Lifecycle Cron** starts after both Redis and PostgreSQL are healthy. Launches the audit log poller (every 15 min) and lifecycle processor (daily) as concurrent tasks.
+4. **Lifecycle Cron** starts after both Redis and PostgreSQL are healthy. Launches up to four concurrent tasks: lifecycle processor (daily), audit log poller (every 15 min), site policy scanner (daily, if `SITE_POLICY_ENABLED=true`), and folder rescan (weekly, if `FOLDER_RESCAN_ENABLED=true`).
 5. **Dashboard** starts after PostgreSQL is healthy.
 
 If any dependency is unavailable at startup, the dependent service will retry (Docker `restart: unless-stopped` handles this). The `depends_on` with `condition: service_healthy` ensures proper ordering on initial deployment.
@@ -480,3 +495,6 @@ For the MVP, monitoring is basic (log review, health check endpoints). For produ
 - **Lifecycle coverage**: Check for events missing lifecycle enrollment rows (`events` rows without matching `sharing_link_lifecycle` entries).
 - **AI API availability**: Track API call success rates by provider.
 - **Disk/RAM usage**: Monitor the tmpfs mount usage to ensure it doesn't fill up.
+- **Site policy scan health**: Check `site_policy_scans` for recent completed scans. If the latest scan is stale or has status `'failed'`, the site policy scanner may have stopped.
+- **Site policy enforcement errors**: Track `site_policy_events` with `action = 'failed'` for persistent Graph API or CSOM failures.
+- **Allow list drift**: Compare the count of Public M365 groups and anonymous-sharing-enabled sites against the allow list sizes to detect drift between scans.

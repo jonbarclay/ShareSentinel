@@ -25,11 +25,19 @@
 }
 
 .brand-logo {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
   margin-right: 2rem;
   font-size: 1.1rem;
   color: #ffffff;
   letter-spacing: -0.01em;
   font-weight: 700;
+}
+
+.brand-logo-img {
+  height: 32px;
+  width: auto;
 }
 
 .nav-links {

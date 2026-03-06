@@ -276,7 +276,106 @@ CREATE TABLE IF NOT EXISTS audit_poll_state (
 );
 ```
 
-### 7. configuration (optional, for future use)
+### 7. site_allowlist
+
+Tracks SharePoint sites that are explicitly permitted to have anonymous sharing enabled. Used by the site policy scanner to determine which sites should have `SharingCapability = ExternalUserAndGuestSharing`.
+
+```sql
+CREATE TABLE IF NOT EXISTS site_allowlist (
+    id SERIAL PRIMARY KEY,
+    site_id VARCHAR(500) NOT NULL UNIQUE,            -- Graph API site ID
+    site_url TEXT NOT NULL DEFAULT '',                -- SharePoint site URL
+    site_display_name VARCHAR(500) DEFAULT '',
+    added_by VARCHAR(255) DEFAULT '',
+    notes TEXT DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+### 8. site_visibility_allowlist
+
+Tracks M365 Unified groups that are explicitly permitted to be Public. All other Public groups are set to Private by the site policy scanner.
+
+```sql
+CREATE TABLE IF NOT EXISTS site_visibility_allowlist (
+    id SERIAL PRIMARY KEY,
+    group_id VARCHAR(500) NOT NULL UNIQUE,           -- M365 group ID
+    site_url TEXT NOT NULL DEFAULT '',                -- Resolved SharePoint site URL
+    group_display_name VARCHAR(500) DEFAULT '',
+    added_by VARCHAR(255) DEFAULT '',
+    notes TEXT DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_site_visibility_allowlist_group_id
+    ON site_visibility_allowlist(group_id);
+```
+
+### 9. site_policy_scans
+
+Tracks execution history for site policy scans (both scheduled and manual/ad-hoc).
+
+```sql
+CREATE TABLE IF NOT EXISTS site_policy_scans (
+    id SERIAL PRIMARY KEY,
+    trigger_type VARCHAR(20) NOT NULL DEFAULT 'scheduled',  -- 'scheduled', 'manual', 'allowlist_add', 'allowlist_remove'
+    triggered_by VARCHAR(255) DEFAULT '',
+    status VARCHAR(30) NOT NULL DEFAULT 'pending',          -- 'pending', 'in_progress', 'completed', 'failed'
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    total_sites_scanned INT DEFAULT 0,
+    visibility_violations_found INT DEFAULT 0,
+    visibility_remediated INT DEFAULT 0,
+    sharing_violations_found INT DEFAULT 0,
+    sharing_remediated INT DEFAULT 0,
+    errors INT DEFAULT 0,
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_site_policy_scans_status
+    ON site_policy_scans(status, created_at);
+```
+
+### 10. site_policy_events
+
+Fine-grained log of every enforcement action taken during site policy scans.
+
+```sql
+CREATE TABLE IF NOT EXISTS site_policy_events (
+    id SERIAL PRIMARY KEY,
+    scan_id INT NOT NULL REFERENCES site_policy_scans(id),
+    policy_type VARCHAR(30) NOT NULL,                -- 'visibility' or 'sharing'
+    site_url TEXT NOT NULL DEFAULT '',
+    site_display_name VARCHAR(500) DEFAULT '',
+    group_id VARCHAR(500) DEFAULT '',
+    previous_value VARCHAR(50) DEFAULT '',            -- e.g., 'Public', 'ExternalUserAndGuestSharing'
+    new_value VARCHAR(50) DEFAULT '',                 -- e.g., 'Private', 'ExternalUserSharingOnly'
+    action VARCHAR(30) NOT NULL,                      -- 'remediated', 'failed', 'already_compliant'
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_site_policy_events_created
+    ON site_policy_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_site_policy_events_policy_type
+    ON site_policy_events(policy_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_site_policy_events_scan_id
+    ON site_policy_events(scan_id);
+```
+
+**Policy types:**
+- `visibility` — M365 group visibility enforcement (Public → Private or Private → Public).
+- `sharing` — SharePoint site sharing capability enforcement (enable or disable anonymous sharing).
+
+**Action values:**
+- `remediated` — Successfully changed the setting.
+- `failed` — Attempted to change but encountered an error (see `error_message`).
+- `already_compliant` — The setting was already at the desired value; no action needed.
+
+### 11. configuration (optional, for future use)
 
 Stores configurable parameters that might be adjusted without redeployment. For the MVP, configuration comes from environment variables and config files. This table is a placeholder for a future admin UI.
 

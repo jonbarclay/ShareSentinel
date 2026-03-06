@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 
 import asyncpg
@@ -32,6 +33,14 @@ from .graph_api import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_error(e: Exception, max_length: int = 500) -> str:
+    """Truncate and sanitize exception message for storage."""
+    msg = str(e)
+    if "Bearer " in msg:
+        msg = re.sub(r'Bearer [A-Za-z0-9\-._~+/]+=*', 'Bearer [REDACTED]', msg)
+    return msg[:max_length]
 
 
 async def run_site_policy_scan(
@@ -149,7 +158,7 @@ async def run_site_policy_scan(
                 stats["visibility_remediated"] += 1
             except Exception as e:
                 action = "failed"
-                error_msg = str(e)
+                error_msg = _sanitize_error(e)
                 stats["errors"] += 1
                 logger.error("Failed to set group %s to Private: %s", gid, e)
 
@@ -218,7 +227,7 @@ async def run_site_policy_scan(
                     stats["sharing_remediated"] += 1
                 except Exception as e:
                     action = "failed"
-                    error_msg = str(e)
+                    error_msg = _sanitize_error(e)
                     stats["errors"] += 1
                     logger.error("Failed to disable sharing on %s: %s", site_url, e)
 
@@ -251,7 +260,7 @@ async def run_site_policy_scan(
                     stats["sharing_remediated"] += 1
                 except Exception as e:
                     action = "failed"
-                    error_msg = str(e)
+                    error_msg = _sanitize_error(e)
                     stats["errors"] += 1
                     logger.error("Failed to enable sharing on %s: %s", site_url, e)
 
@@ -312,7 +321,7 @@ async def run_site_policy_scan(
                 WHERE id = $9
                 """,
                 datetime.now(timezone.utc),
-                str(e),
+                _sanitize_error(e),
                 stats["total_sites_scanned"],
                 stats["visibility_violations_found"],
                 stats["visibility_remediated"],
@@ -360,7 +369,7 @@ async def apply_visibility_for_group(
         logger.info("Set group %s (%s) to Public (allowlist add)", group_id, group_display_name)
     except Exception as e:
         action = "failed"
-        error_msg = str(e)
+        error_msg = _sanitize_error(e)
         logger.error("Failed to set group %s to Public: %s", group_id, e)
 
     async with db_pool.acquire() as conn:
@@ -448,7 +457,7 @@ async def apply_sharing_for_site(
             logger.info("Sharing already enabled on %s", site_url)
     except Exception as e:
         action = "failed"
-        error_msg = str(e)
+        error_msg = _sanitize_error(e)
         logger.error("Failed to enable sharing on %s: %s", site_url, e)
 
     async with db_pool.acquire() as conn:
@@ -509,7 +518,7 @@ async def revoke_visibility_for_group(
         logger.info("Set group %s (%s) to Private (allowlist remove)", group_id, group_display_name)
     except Exception as e:
         action = "failed"
-        error_msg = str(e)
+        error_msg = _sanitize_error(e)
         logger.error("Failed to set group %s to Private: %s", group_id, e)
 
     async with db_pool.acquire() as conn:
@@ -593,7 +602,7 @@ async def revoke_sharing_for_site(
             logger.info("Sharing already disabled on %s", site_url)
     except Exception as e:
         action = "failed"
-        error_msg = str(e)
+        error_msg = _sanitize_error(e)
         logger.error("Failed to disable sharing on %s: %s", site_url, e)
 
     async with db_pool.acquire() as conn:

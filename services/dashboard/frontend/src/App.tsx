@@ -16,6 +16,7 @@ function Nav() {
     <nav className="top-nav glass-effect">
       <div className="nav-content">
         <NavLink to="/" className="brand-logo" style={{ textDecoration: 'none' }} end>
+          <img src="/logo.png" alt="" className="brand-logo-img" />
           ShareSentinel
         </NavLink>
         <div className="nav-links">

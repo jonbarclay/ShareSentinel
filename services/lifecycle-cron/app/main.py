@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import sys
 
 import asyncpg
@@ -69,6 +70,11 @@ async def site_policy_loop(
         config.site_policy_interval_hours,
     )
 
+    _ALLOWED_ACTIONS = {"set_public", "set_private", "enable_sharing", "disable_sharing"}
+    _UUID_RE = re.compile(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I,
+    )
+
     while True:
         try:
             # 1a. Check Redis for targeted actions (add-to-allowlist triggers)
@@ -76,7 +82,27 @@ async def site_policy_loop(
             if action_msg:
                 action_data = json.loads(action_msg)
                 action_type = action_data.get("action")
-                logger.info("Site policy action received: %s", action_data)
+
+                # Validate action type
+                if action_type not in _ALLOWED_ACTIONS:
+                    logger.warning("Rejected unknown site policy action: %s", action_type)
+                    continue
+
+                # Validate group_id for visibility actions
+                if action_type in ("set_public", "set_private"):
+                    gid = action_data.get("group_id", "")
+                    if not _UUID_RE.match(gid):
+                        logger.warning("Rejected invalid group_id: %s", gid[:50])
+                        continue
+
+                # Validate site_url for sharing actions
+                if action_type in ("enable_sharing", "disable_sharing"):
+                    url = action_data.get("site_url", "")
+                    if not url.startswith("https://"):
+                        logger.warning("Rejected invalid site_url: %s", url[:80])
+                        continue
+
+                logger.info("Site policy action received: %s", action_type)
 
                 if action_type == "set_public":
                     await apply_visibility_for_group(
@@ -108,8 +134,6 @@ async def site_policy_loop(
                         site_display_name=action_data.get("site_display_name", ""),
                         triggered_by=action_data.get("triggered_by", "unknown"),
                     )
-                else:
-                    logger.warning("Unknown site policy action: %s", action_type)
 
                 continue  # Check for more actions before sleeping
 
@@ -117,7 +141,10 @@ async def site_policy_loop(
             trigger = await redis_client.lpop("sharesentinel:site_policy_trigger")
             if trigger:
                 data = json.loads(trigger)
-                scan_id = data["scan_id"]
+                scan_id = data.get("scan_id")
+                if not isinstance(scan_id, int) or scan_id < 1:
+                    logger.warning("Rejected invalid scan_id: %s", scan_id)
+                    continue
                 logger.info("Manual site policy scan triggered (scan_id=%d)", scan_id)
                 await run_site_policy_scan(db_pool, auth, config, scan_id=scan_id)
                 continue  # Check for more triggers before sleeping

@@ -6,9 +6,10 @@ from typing import Optional
 
 import asyncpg
 from fastapi import APIRouter, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..auth import require_role
+from ..config import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -19,29 +20,34 @@ def _pool(request: Request) -> asyncpg.Pool:
     return request.app.state.db
 
 
+def _escape_ilike(value: str) -> str:
+    """Escape SQL ILIKE wildcard characters in user input."""
+    return value.replace("%", "\\%").replace("_", "\\_")
+
+
 # --- Request models ---
 
 class AddSiteRequest(BaseModel):
-    site_id: str
-    site_url: str
-    site_display_name: str = ""
-    added_by: str = ""
-    notes: str = ""
+    site_id: str = Field(..., min_length=1, max_length=500)
+    site_url: str = Field(..., min_length=1, max_length=2000)
+    site_display_name: str = Field("", max_length=500)
+    added_by: str = Field("", max_length=255)
+    notes: str = Field("", max_length=2000)
 
 
 class TriggerSyncRequest(BaseModel):
-    triggered_by: str = ""
+    triggered_by: str = Field("", max_length=255)
 
 
 class AddVisibilitySiteRequest(BaseModel):
-    group_id: str
-    site_url: str = ""
-    group_display_name: str = ""
-    notes: str = ""
+    group_id: str = Field(..., min_length=1, max_length=500)
+    site_url: str = Field("", max_length=2000)
+    group_display_name: str = Field("", max_length=500)
+    notes: str = Field("", max_length=2000)
 
 
 class TriggerScanRequest(BaseModel):
-    triggered_by: str = ""
+    triggered_by: str = Field("", max_length=255)
 
 
 # --- Allow list CRUD ---
@@ -62,7 +68,7 @@ async def list_allowlist_sites(
         conditions.append(
             f"(site_display_name ILIKE ${idx} OR site_url ILIKE ${idx})"
         )
-        params.append(f"%{q}%")
+        params.append(f"%{_escape_ilike(q)}%")
         idx += 1
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
@@ -93,10 +99,10 @@ async def list_allowlist_sites(
 
 
 @router.post("/allowlist/sites")
+@limiter.limit("20/minute")
 async def add_allowlist_site(request: Request, body: AddSiteRequest, user=require_role("admin")):
     pool = _pool(request)
-    user = getattr(request.state, "user", None)
-    added_by = user["email"] if user else (body.added_by or "unknown")
+    added_by = user.get("email", "unknown")
 
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -137,10 +143,10 @@ async def add_allowlist_site(request: Request, body: AddSiteRequest, user=requir
 
 
 @router.delete("/allowlist/sites/{site_db_id}")
+@limiter.limit("20/minute")
 async def remove_allowlist_site(request: Request, site_db_id: int, user=require_role("admin")):
     pool = _pool(request)
-    user = getattr(request.state, "user", None)
-    removed_by = user["email"] if user else "unknown"
+    removed_by = user.get("email", "unknown")
 
     # Fetch site info before deleting so we can trigger the revoke action
     async with pool.acquire() as conn:
@@ -176,10 +182,12 @@ async def remove_allowlist_site(request: Request, site_db_id: int, user=require_
 # --- Site details via Graph API ---
 
 @router.get("/allowlist/site-details")
+@limiter.limit("30/minute")
 async def get_site_details_endpoint(
     request: Request,
     site_url: str = Query(""),
     group_id: str = Query(""),
+    _user=require_role("analyst"),
 ):
     """Fetch live site/group details from Graph API (visibility, sharing, owners, members)."""
     from ..graph_helper import get_site_details, is_configured
@@ -219,7 +227,7 @@ async def get_site_details_endpoint(
                     WHERE site_url ILIKE $1
                     ORDER BY created_at DESC LIMIT 1
                     """,
-                    f"%{site_url.rstrip('/').split('/sites/')[-1]}%",
+                    f"%{_escape_ilike(site_url.rstrip('/').split('/sites/')[-1])}%",
                 )
                 if cap_row:
                     details["sharing_capability"] = cap_row["new_value"]
@@ -230,6 +238,7 @@ async def get_site_details_endpoint(
 # --- Site search via Graph API ---
 
 @router.get("/allowlist/sites/search")
+@limiter.limit("30/minute")
 async def search_sharepoint_sites(
     request: Request,
     q: str = Query("", min_length=1),
@@ -266,10 +275,10 @@ async def search_sharepoint_sites(
 # --- Sync trigger + history ---
 
 @router.post("/allowlist/sync")
+@limiter.limit("5/minute")
 async def trigger_sync(request: Request, body: TriggerSyncRequest, user=require_role("admin")):
     pool = _pool(request)
-    user = getattr(request.state, "user", None)
-    triggered_by = user["email"] if user else (body.triggered_by or "unknown")
+    triggered_by = user.get("email", "unknown")
 
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -383,7 +392,7 @@ async def list_visibility_allowlist(
         conditions.append(
             f"(group_display_name ILIKE ${idx} OR site_url ILIKE ${idx} OR group_id ILIKE ${idx})"
         )
-        params.append(f"%{q}%")
+        params.append(f"%{_escape_ilike(q)}%")
         idx += 1
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
@@ -414,14 +423,14 @@ async def list_visibility_allowlist(
 
 
 @router.post("/visibility-allowlist/sites")
+@limiter.limit("20/minute")
 async def add_visibility_site(
     request: Request,
     body: AddVisibilitySiteRequest,
     user=require_role("admin"),
 ):
     pool = _pool(request)
-    user = getattr(request.state, "user", None)
-    added_by = user["email"] if user else "unknown"
+    added_by = user.get("email", "unknown")
 
     # Resolve site URL from group_id if not provided
     site_url = body.site_url
@@ -474,14 +483,14 @@ async def add_visibility_site(
 
 
 @router.delete("/visibility-allowlist/sites/{site_db_id}")
+@limiter.limit("20/minute")
 async def remove_visibility_site(
     request: Request,
     site_db_id: int,
     user=require_role("admin"),
 ):
     pool = _pool(request)
-    user = getattr(request.state, "user", None)
-    removed_by = user["email"] if user else "unknown"
+    removed_by = user.get("email", "unknown")
 
     # Fetch group info before deleting so we can trigger the revoke action
     async with pool.acquire() as conn:
@@ -516,6 +525,7 @@ async def remove_visibility_site(
 
 
 @router.get("/visibility-allowlist/sites/search")
+@limiter.limit("30/minute")
 async def search_m365_groups_endpoint(
     request: Request,
     q: str = Query("", min_length=1),
@@ -559,6 +569,7 @@ async def list_policy_events(
     q: Optional[str] = None,
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
+    _user=require_role("analyst"),
 ):
     pool = _pool(request)
     conditions = []
@@ -574,7 +585,7 @@ async def list_policy_events(
         conditions.append(
             f"(site_display_name ILIKE ${idx} OR site_url ILIKE ${idx})"
         )
-        params.append(f"%{q}%")
+        params.append(f"%{_escape_ilike(q)}%")
         idx += 1
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
@@ -606,7 +617,7 @@ async def list_policy_events(
 
 
 @router.get("/site-policy/events/summary")
-async def policy_events_summary(request: Request):
+async def policy_events_summary(request: Request, _user=require_role("analyst")):
     pool = _pool(request)
     async with pool.acquire() as conn:
         last_scan = await conn.fetchrow(
@@ -642,14 +653,14 @@ async def policy_events_summary(request: Request):
 
 
 @router.post("/site-policy/scan")
+@limiter.limit("5/minute")
 async def trigger_policy_scan(
     request: Request,
     body: TriggerScanRequest,
     user=require_role("admin"),
 ):
     pool = _pool(request)
-    user = getattr(request.state, "user", None)
-    triggered_by = user["email"] if user else (body.triggered_by or "unknown")
+    triggered_by = user.get("email", "unknown")
 
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -677,6 +688,7 @@ async def list_policy_scans(
     request: Request,
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
+    _user=require_role("analyst"),
 ):
     pool = _pool(request)
     offset = (page - 1) * per_page
@@ -709,7 +721,7 @@ async def list_policy_scans(
 
 
 @router.get("/site-policy/scans/{scan_id}")
-async def get_policy_scan_detail(request: Request, scan_id: int):
+async def get_policy_scan_detail(request: Request, scan_id: int, _user=require_role("analyst")):
     pool = _pool(request)
     async with pool.acquire() as conn:
         scan_row = await conn.fetchrow(

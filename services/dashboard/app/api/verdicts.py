@@ -104,8 +104,7 @@ async def bulk_review(request: Request, body: BulkReviewRequest, user=require_ro
     pool = _pool(request)
     event_ids = list(dict.fromkeys(body.event_ids))
 
-    user_obj = getattr(request.state, "user", None)
-    reviewed_by = user_obj["email"] if user_obj else "analyst"
+    reviewed_by = user.get("email", "analyst")
     now = datetime.now(timezone.utc)
 
     results = []
@@ -199,11 +198,7 @@ async def bulk_review(request: Request, body: BulkReviewRequest, user=require_ro
 @router.patch("/verdicts/{event_id}")
 async def review_verdict(request: Request, event_id: str, body: AnalystReview, user=require_role("analyst")):
     pool = _pool(request)
-
-    # Use the authenticated session identity; fall back to "analyst" when auth
-    # is disabled (AUTH_DISABLED=true).
-    user = getattr(request.state, "user", None)
-    reviewed_by = user["email"] if user else "analyst"
+    reviewed_by = user.get("email", "analyst")
 
     async with pool.acquire() as conn:
         await conn.execute(

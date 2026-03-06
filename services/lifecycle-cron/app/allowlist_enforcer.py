@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional, Set
 
@@ -17,6 +18,14 @@ import asyncpg
 from .config import LifecycleConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_error(e: Exception, max_length: int = 500) -> str:
+    """Truncate and sanitize exception message for storage."""
+    msg = str(e)
+    if "Bearer " in msg:
+        msg = re.sub(r'Bearer [A-Za-z0-9\-._~+/]+=*', 'Bearer [REDACTED]', msg)
+    return msg[:max_length]
 
 
 def _create_spo_admin_context(config: LifecycleConfig):
@@ -233,7 +242,7 @@ async def run_enforcement(
 
             except Exception as e:
                 action = "failed"
-                error_msg = str(e)
+                error_msg = _sanitize_error(e)
                 stats["sites_failed"] += 1
                 logger.error("Failed to update %s: %s", site_url, e)
 
@@ -300,7 +309,7 @@ async def run_enforcement(
                 WHERE id = $8
                 """,
                 datetime.now(timezone.utc),
-                str(e),
+                _sanitize_error(e),
                 stats["total_sites_checked"],
                 stats["sites_disabled"],
                 stats["sites_enabled"],

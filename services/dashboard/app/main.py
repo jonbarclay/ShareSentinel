@@ -13,8 +13,12 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .api import events, verdicts, stats, audit, allowlist, admin
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+
 from .config import (
     DATABASE_URL, ALLOWED_ORIGINS, AUTH_ENABLED, REDIS_URL, SESSION_REDIS_DB,
+    limiter,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,6 +100,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ShareSentinel Dashboard", lifespan=lifespan)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(

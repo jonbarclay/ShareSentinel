@@ -64,7 +64,7 @@ These two operations capture all anonymous and org-wide sharing link creation ev
                                └─────────────────┘
 ```
 
-Both loops run concurrently via `asyncio.gather()` in the lifecycle-cron `main.py`.
+Up to four loops run concurrently via `asyncio.gather()` in the lifecycle-cron `main.py`: the lifecycle processor, audit log poller, site policy scanner (if `SITE_POLICY_ENABLED=true`), and folder rescan (if `FOLDER_RESCAN_ENABLED=true`).
 
 ## Audit Record → Queue Job Mapping
 

@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-ShareSentinel is a containerized system that monitors OneDrive and SharePoint file sharing activity, automatically analyzing shared files for sensitive content, and alerting human analysts when risky files are detected. It also enforces a 180-day expiration policy on anonymous and organization-wide sharing links, sending countdown notifications to file owners and automatically removing links at expiration.
+ShareSentinel is a containerized system that monitors OneDrive and SharePoint file sharing activity, automatically analyzing shared files for sensitive content, and alerting human analysts when risky files are detected. It also enforces a 180-day expiration policy on anonymous and organization-wide sharing links, sending countdown notifications to file owners and automatically removing links at expiration. Additionally, ShareSentinel enforces site-level policies: it ensures only explicitly allow-listed SharePoint sites can have anonymous sharing enabled, and only allow-listed M365 groups can have Public visibility.
 
-The system polls the Microsoft Graph Audit Log Query API for sharing events, downloads shared files via the Microsoft Graph API, preprocesses them, submits them to an AI model for sensitivity analysis, and notifies analysts of high-risk findings.
+The system polls the Microsoft Graph Audit Log Query API for sharing events, downloads shared files via the Microsoft Graph API, preprocesses them, submits them to an AI model for sensitivity analysis, and notifies analysts of high-risk findings. A daily site policy scanner enforces sharing capability and group visibility policies across all SharePoint sites and M365 groups.
 
 ## Core Workflow Summary
 
@@ -41,7 +41,7 @@ The system runs as Docker Compose services on an Ubuntu server, with a future mi
 
 ### Containers
 
-- **lifecycle-cron**: Runs two concurrent loops — (1) audit log poller that queries the Graph API every 15 minutes for new sharing events and pushes them to the Redis queue, and (2) lifecycle processor that checks sharing link expiry milestones daily, sends countdown notifications, and removes expired links.
+- **lifecycle-cron**: Runs up to four concurrent loops — (1) audit log poller that queries the Graph API every 15 minutes for new sharing events and pushes them to the Redis queue, (2) lifecycle processor that checks sharing link expiry milestones daily, sends countdown notifications, and removes expired links, (3) site policy scanner that enforces visibility and anonymous sharing policies across all SharePoint sites and M365 groups daily, and (4) folder rescan that re-checks shared folders for new or modified files weekly.
 - **worker**: Python service that pulls jobs from Redis (up to 5 concurrently), orchestrates the full processing pipeline (metadata pre-screen, download, text extraction, AI analysis, lifecycle enrollment, notification, cleanup).
 - **dashboard**: React + FastAPI web UI for analysts to review events, verdicts, and statistics.
 - **redis**: Job queue, deduplication cache, and rate limiting state.
@@ -58,6 +58,7 @@ The system runs as Docker Compose services on an Ubuntu server, with a future mi
 - **Image processing**: Pillow (resizing/compression)
 - **AI providers**: Anthropic Claude API, OpenAI API, Google Gemini API (abstracted behind a common interface)
 - **Notifications**: Email (SMTP) for analyst alerts and lifecycle countdown emails; Jira ticket creation (Phase 2)
+- **SharePoint admin**: Office365-REST-Python-Client (CSOM) for per-site sharing capability management (Graph API does not support this)
 
 ## Sensitivity Detection (Category-Based)
 
@@ -95,16 +96,19 @@ share-sentinel/
 ├── .env.example                       # Environment variable template
 ├── docs/                              # Planning documents (detailed specs)
 ├── services/
-│   ├── lifecycle-cron/                # Audit log poller + 180-day lifecycle processor
+│   ├── lifecycle-cron/                # Audit log poller + lifecycle + site policy + folder rescan
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   └── app/
-│   │       ├── main.py               # Entry point (concurrent loops)
+│   │       ├── main.py               # Entry point (up to 4 concurrent loops)
 │   │       ├── config.py             # LifecycleConfig
 │   │       ├── audit_poller.py       # Graph Audit Log Query API poller
 │   │       ├── processor.py          # Lifecycle milestone processor
 │   │       ├── notifier.py           # Countdown email notifications
-│   │       └── graph_api.py          # Graph API auth + helpers
+│   │       ├── graph_api.py          # Graph API auth + helpers (groups, visibility)
+│   │       ├── site_policy_scanner.py # Dual site policy scanner (visibility + sharing)
+│   │       ├── allowlist_enforcer.py  # SharePoint CSOM sharing capability management
+│   │       └── folder_rescan.py      # Weekly folder rescan for new/modified files
 │   ├── worker/
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
@@ -125,7 +129,7 @@ share-sentinel/
 │   │   │   ├── database/
 │   │   │   │   ├── connection.py    # PostgreSQL connection management
 │   │   │   │   ├── repositories.py  # Data access methods
-│   │   │   │   └── migrations/      # Schema migrations (001-012)
+│   │   │   │   └── migrations/      # Schema migrations (001-022)
 │   │   │   ├── graph_api/           # Graph API auth + client + sharing
 │   │   │   ├── lifecycle/
 │   │   │   │   └── enrollment.py    # Sharing link lifecycle enrollment
@@ -134,7 +138,11 @@ share-sentinel/
 │   └── dashboard/
 │       ├── Dockerfile
 │       ├── app/                      # FastAPI backend
+│       │   ├── api/
+│       │   │   └── allowlist.py     # Site policy allow list + scan API endpoints
+│       │   └── graph_helper.py      # Graph API helpers (site/group search, details)
 │       └── frontend/                 # React (Vite) frontend
+│           └── src/pages/AllowList.tsx  # Tabbed UI (Sharing, Visibility, Events)
 ├── config/
 │   ├── prompt_templates/
 │   │   └── sensitivity_analysis_v2.txt  # Category-based AI prompt template
@@ -177,6 +185,15 @@ All anonymous and org-wide sharing links are enrolled in a lifecycle tracker. Th
 ### Filename/path analysis is the fallback for unprocessable files
 Files that are too large to download, are excluded types (video, audio, binaries), or fail all extraction methods still get analyzed. The AI receives the filename, file path, file size, and sharing metadata and provides a sensitivity assessment based solely on that information.
 
+### Site-level policies are enforced via dual allow lists
+The system enforces two distinct site-level policies, each with its own allow list:
+
+1. **Visibility Policy**: All M365 Unified groups are expected to be Private. Groups found to be Public that are not on the visibility allow list (`site_visibility_allowlist`) are automatically set to Private via the Graph API (`PATCH /groups/{id}`).
+
+2. **Sharing Capability Policy**: All SharePoint sites are expected to block anonymous sharing links. Sites found with `SharingCapability = ExternalUserAndGuestSharing` that are not on the sharing allow list (`site_allowlist`) are downgraded to `ExternalUserSharingOnly` via the SharePoint CSOM tenant admin API.
+
+Both policies are enforced by a daily scan in the lifecycle-cron container. Dashboard administrators can also add/remove sites from allow lists, which triggers immediate enforcement actions via Redis. The Graph API is used for group visibility changes, while the Office365-REST-Python-Client (CSOM) library is required for SharePoint site sharing capability changes because the Graph API does not support per-site `SharingCapability` management.
+
 ## Important Constraints
 
 - **Volume**: Less than 100 sharing events per day on average.
@@ -187,6 +204,8 @@ Files that are too large to download, are excluded types (video, audio, binaries
 - **Sensitivity escalation**: Any Tier 1 or Tier 2 category triggers analyst notification. No configurable threshold.
 - **Sharing link expiration**: 180 days from link creation, with milestone notifications at 120, 150, 165, 173, and 178 days.
 - **Excluded file types**: Video (.mp4, .mov, .avi, .mkv, .wmv), Audio (.mp3, .wav, .m4a, .aac, .flac), Binaries (.exe, .dll, .bin), and other non-document types defined in config/file_types.yml.
+- **Site policy scan interval**: Configurable (default 24 hours). Scans all M365 groups for visibility violations and all SharePoint sites for sharing capability violations.
+- **Site policy enforcement**: Immediate when allow list entries are added/removed via dashboard; daily for scheduled full scans.
 
 ## Development Workflow
 
@@ -202,7 +221,8 @@ All code execution, testing, and debugging MUST happen inside the Docker contain
 
 ## Environment and Authentication
 
-- **Microsoft Graph API**: Azure AD app registration with application permissions for `Files.Read.All`, `Sites.Read.All`, `Sites.FullControl.All` (for link removal), and `AuditLogsQuery.Read.All` (for audit log polling). Uses client credentials flow (client_id + client_secret + tenant_id) with optional certificate auth.
+- **Microsoft Graph API**: Azure AD app registration with application permissions for `Files.Read.All`, `Sites.Read.All`, `Sites.FullControl.All` (for link removal), `AuditLogsQuery.Read.All` (for audit log polling), and `Group.ReadWrite.All` (for site visibility policy enforcement). Uses client credentials flow (client_id + client_secret + tenant_id) with optional certificate auth.
+- **SharePoint Admin CSOM**: The same Azure AD app registration authenticates to the SharePoint tenant admin site (`https://yourtenant-admin.sharepoint.com`) via certificate or client secret to manage per-site `SharingCapability` settings. Requires the `SHAREPOINT_ADMIN_URL` environment variable.
 - **AI APIs**: API keys for each provider stored as environment variables or Docker secrets.
 - **SMTP**: Configured for analyst email notifications and lifecycle countdown emails.
 - **PostgreSQL**: Connection string via environment variable.

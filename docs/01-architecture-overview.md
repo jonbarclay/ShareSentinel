@@ -4,6 +4,8 @@
 
 ShareSentinel monitors file sharing activity in OneDrive and SharePoint. When a user creates an anonymous link or an organization-wide sharing link, the system automatically evaluates whether the shared file contains sensitive content. If the content appears risky, human analysts are notified so they can reach out to the user. Sharing links are also enrolled in a 180-day lifecycle tracker that sends countdown notifications to the file owner and automatically removes the link at expiration.
 
+Additionally, ShareSentinel enforces site-level policies: a daily scanner ensures only allow-listed M365 groups can be Public (all others are set to Private) and only allow-listed SharePoint sites can have anonymous sharing enabled (all others are downgraded to external-user-only sharing).
+
 ## Data Flow
 
 ```
@@ -16,6 +18,7 @@ ShareSentinel monitors file sharing activity in OneDrive and SharePoint. When a 
 │  AI APIs (Anthropic / OpenAI / Gemini)                                  │
 │  SMTP Server (analyst + user email notifications)                       │
 │  Jira API (Phase 2 - ticket creation)                                   │
+│  SharePoint CSOM Admin API (per-site sharing capability management)     │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
@@ -50,6 +53,8 @@ ShareSentinel monitors file sharing activity in OneDrive and SharePoint. When a 
 │                                              │ - File Hashes        │  │
 │                                              │ - Sharing Link       │  │
 │                                              │   Lifecycle          │  │
+│                                              │ - Site Policy        │  │
+│                                              │   Allow Lists/Events │  │
 │                                              │ - Audit Poll State   │  │
 │                                              │ - Audit Log          │  │
 │                                              └──────────────────────┘  │
@@ -60,13 +65,15 @@ ShareSentinel monitors file sharing activity in OneDrive and SharePoint. When a 
 
 ### Container 1: lifecycle-cron
 
-**Purpose**: Runs two concurrent background loops:
+**Purpose**: Runs up to four concurrent background loops:
 1. **Audit Log Poller** — queries the Microsoft Graph Audit Log Query API every 15 minutes for new `AnonymousLinkCreated` and `CompanyLinkCreated` events. Deduplicates via Redis and pushes new jobs onto the Redis queue for the worker.
 2. **Lifecycle Processor** — checks sharing link expiry milestones daily, sends countdown notifications to file owners, and removes expired sharing links via the Graph API at the 180-day mark.
+3. **Site Policy Scanner** — enforces dual site-level policies daily: (a) sets non-allow-listed Public M365 groups to Private via Graph API, and (b) disables anonymous sharing on non-allow-listed SharePoint sites via SharePoint CSOM tenant admin API. Also processes immediate enforcement actions triggered by dashboard allow list changes via Redis.
+4. **Folder Rescan** — re-checks previously shared folders for new or modified files on a weekly cycle.
 
-**Technology**: Python 3.12, asyncpg, httpx, redis.asyncio
+**Technology**: Python 3.12, asyncpg, httpx, redis.asyncio, Office365-REST-Python-Client (CSOM)
 
-**Connections**: Microsoft Graph API (audit log queries + sharing link removal), Redis (dedup + queue push), PostgreSQL (poll state + lifecycle tracking), SMTP (lifecycle notifications).
+**Connections**: Microsoft Graph API (audit log queries + sharing link removal + group visibility enforcement), SharePoint CSOM Admin API (per-site sharing capability management), Redis (dedup + queue push + policy action triggers), PostgreSQL (poll state + lifecycle tracking + site policy allow lists + enforcement history), SMTP (lifecycle notifications).
 
 **Stateless**: Yes. Polling state is stored in PostgreSQL.
 
@@ -130,14 +137,17 @@ ShareSentinel monitors file sharing activity in OneDrive and SharePoint. When a 
 
 All inter-container communication uses the Docker Compose internal network.
 
-- **Lifecycle Cron → Graph API**: HTTPS requests via httpx to the beta audit log query endpoint and v1.0 sharing permissions endpoint.
-- **Lifecycle Cron → Redis**: Direct Redis client connection. RPUSH job payloads and SET NX for dedup.
+- **Lifecycle Cron → Graph API**: HTTPS requests via httpx to the beta audit log query endpoint, v1.0 sharing permissions endpoint, and v1.0 groups endpoint (for visibility policy enforcement).
+- **Lifecycle Cron → SharePoint CSOM Admin API**: HTTPS requests via Office365-REST-Python-Client to the SharePoint tenant admin site for per-site sharing capability management.
+- **Lifecycle Cron → Redis**: Direct Redis client connection. RPUSH job payloads, SET NX for dedup, and LPOP for site policy action triggers.
 - **Worker → Redis**: Direct Redis client connection. Blocking pop (BLPOP) from the Redis list to consume jobs.
 - **Worker → PostgreSQL**: Direct database connection via asyncpg with connection pooling.
 - **Worker → Graph API**: HTTPS requests via httpx. Authenticates using Azure AD client credentials (OAuth2 token).
 - **Worker → AI APIs**: HTTPS requests via provider-specific SDKs (anthropic, openai, google-generativeai Python packages).
 - **Worker → SMTP**: Standard SMTP connection for sending email notifications.
-- **Dashboard → PostgreSQL**: Direct database connection for read queries.
+- **Dashboard → PostgreSQL**: Direct database connection for read queries and site policy allow list management.
+- **Dashboard → Redis**: Direct Redis connection for pushing site policy action triggers (allow list add/remove) and session management.
+- **Dashboard → Graph API**: HTTPS requests via httpx for site/group search and detail retrieval (allow list management UI).
 
 ## Error Handling Philosophy
 
@@ -174,8 +184,9 @@ The lifecycle processor runs daily in the lifecycle-cron container. It queries f
 - **Cleanup safety net**: A background task in the worker periodically scans the tmpfs mount and deletes any files older than 30 minutes, catching any files missed by normal cleanup.
 - **No file content in logs**: Application logs contain only metadata (file ID, filename, event type, processing status, sensitivity categories). The AI's detailed summary is stored only in the database, not in log files.
 - **AI API data agreements**: The organization has data processing agreements with all three AI providers. Nonetheless, the system minimizes data sent to AI APIs by extracting text locally and sending only text content rather than raw files when possible.
-- **Azure AD app permissions**: The Graph API application uses `Files.Read.All`, `Sites.Read.All`, and `AuditLogsQuery.Read.All`. Write permissions are limited to `Sites.FullControl.All` (required for sharing link removal at the 180-day mark).
-- **Container isolation**: Each container runs with the minimum required privileges. Only the dashboard exposes an HTTP port.
+- **Azure AD app permissions**: The Graph API application uses `Files.Read.All`, `Sites.Read.All`, `AuditLogsQuery.Read.All`, and `Group.ReadWrite.All`. Write permissions include `Sites.FullControl.All` (required for sharing link removal at the 180-day mark) and `Group.ReadWrite.All` (required for setting M365 group visibility from Public to Private). The same app registration authenticates to the SharePoint tenant admin site via CSOM for per-site sharing capability management.
+- **Site policy enforcement is allow-list-based**: The default posture is restrictive (anonymous sharing disabled, groups Private). Only explicitly allow-listed sites/groups are permitted to have broader settings. Allow list modifications require the `admin` role in the dashboard.
+- **Container isolation**: Each container runs with the minimum required privileges. Only the dashboard exposes an HTTP port (via nginx).
 
 ## Kubernetes Migration Notes
 

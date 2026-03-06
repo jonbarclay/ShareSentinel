@@ -89,5 +89,20 @@ else:
     )
     sys.exit(1)
 
+# --- Rate Limiting ---
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+
+def _rate_limit_key_func(request) -> str:
+    """Use session user email if available, otherwise fall back to client IP."""
+    user = getattr(getattr(request, "state", None), "user", None)
+    if user and user.get("email"):
+        return user["email"]
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=_rate_limit_key_func, storage_uri=REDIS_URL)
+
 # --- Browser Auth (SharePoint root for cookie capture) ---
 SHAREPOINT_ROOT_URL = os.environ.get("SHAREPOINT_ROOT_URL", "https://www.office.com")
