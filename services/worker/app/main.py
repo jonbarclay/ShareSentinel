@@ -253,7 +253,10 @@ async def main() -> None:
         await redis_conn.ping()
         logger.info("Redis connection established")
     except Exception:
-        logger.critical("Cannot reach Redis at %s", config.redis_url, exc_info=True)
+        from urllib.parse import urlparse as _urlparse
+        _parsed = _urlparse(config.redis_url)
+        _safe = config.redis_url.replace(f":{_parsed.password}@", ":***@") if _parsed.password else config.redis_url
+        logger.critical("Cannot reach Redis at %s", _safe, exc_info=True)
         raise
 
     # PostgreSQL
