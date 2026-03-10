@@ -293,6 +293,37 @@ services:
         max-size: "50m"
         max-file: "5"
 
+  watchdog:
+    build:
+      context: .
+      dockerfile: services/watchdog/Dockerfile
+    container_name: sharesentinel-watchdog
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-sharesentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharesentinel}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - TEAMS_WEBHOOK_URL=${TEAMS_WEBHOOK_URL:-}
+      - WATCHDOG_CHECK_INTERVAL_SECONDS=${WATCHDOG_CHECK_INTERVAL_SECONDS:-120}
+      - WATCHDOG_HEARTBEAT_STALE_SECONDS=${WATCHDOG_HEARTBEAT_STALE_SECONDS:-300}
+      - WATCHDOG_POLL_STALE_SECONDS=${WATCHDOG_POLL_STALE_SECONDS:-3600}
+      - WATCHDOG_AUTO_RESTART=${WATCHDOG_AUTO_RESTART:-true}
+      - LIFECYCLE_CONTAINER_NAME=sharesentinel-lifecycle-cron
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - sharesentinel
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
   redis:
     image: redis:7-alpine
     container_name: sharesentinel-redis

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import asyncpg
 import httpx
@@ -57,6 +57,149 @@ def _humanize_bytes(n: Optional[int]) -> str:
     return f"{n:.1f} TB"
 
 
+async def _remove_permissions_for_item(
+    auth: GraphAuth,
+    audit: AuditLogRepository,
+    db_pool: asyncpg.Pool,
+    event_id: str,
+    drive_id: str,
+    item_id: str,
+    label: str = "file",
+) -> Tuple[int, int, List[Dict[str, Any]]]:
+    """Remove all anonymous/org-wide permissions from a drive item.
+
+    Returns (removed_count, failed_count, detail_list).
+    Also updates sharing_link_lifecycle rows on successful removal.
+    """
+    removed = 0
+    failed = 0
+    details: List[Dict[str, Any]] = []
+
+    try:
+        all_perms = await get_sharing_permissions(auth, drive_id, item_id)
+    except Exception as exc:
+        logger.error("Failed to list permissions for %s (%s): %s", event_id, label, exc)
+        details.append({"error": f"Failed to list permissions ({label}): {exc}"})
+        return removed, failed, details
+
+    for perm in all_perms:
+        link = perm.get("link")
+        if not link:
+            continue
+        scope = link.get("scope", "").lower()
+        if scope not in ("anonymous", "organization"):
+            continue
+
+        perm_id = perm.get("id")
+        if not perm_id:
+            continue
+
+        detail: Dict[str, Any] = {
+            "permission_id": perm_id,
+            "scope": scope,
+            "type": link.get("type", "unknown"),
+            "item_label": label,
+        }
+        try:
+            await remove_sharing_permission(auth, drive_id, item_id, perm_id)
+            detail["status"] = "removed"
+            removed += 1
+            await audit.log(event_id, "permission_removed", detail)
+
+            # Update lifecycle row to manually_removed
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE sharing_link_lifecycle
+                    SET status = 'manually_removed', removal_attempted_at = NOW(),
+                        removal_succeeded = TRUE, updated_at = NOW()
+                    WHERE permission_id = $1 AND status IN ('active', 'ms_managed')
+                    """,
+                    perm_id,
+                )
+        except Exception as exc:
+            detail["status"] = "failed"
+            detail["error"] = str(exc)
+            failed += 1
+            await audit.log(
+                event_id, "permission_removal_failed", detail, status="error",
+                error=str(exc),
+            )
+        details.append(detail)
+
+    return removed, failed, details
+
+
+async def _validate_removal(
+    auth: GraphAuth, drive_id: str, item_id: str,
+) -> Tuple[bool, List[Dict[str, Any]]]:
+    """Re-query permissions and check no anonymous/org-wide links remain.
+
+    Returns (passed, violations_list).
+    """
+    try:
+        remaining = await get_sharing_permissions(auth, drive_id, item_id)
+    except Exception as exc:
+        logger.warning("Validation query failed: %s", exc)
+        return False, [{"error": f"Validation query failed: {exc}"}]
+
+    violations = []
+    for p in remaining:
+        link = p.get("link", {})
+        scope = link.get("scope", "").lower()
+        if scope in ("anonymous", "organization"):
+            violations.append({"permission_id": p.get("id"), "scope": scope})
+
+    return len(violations) == 0, violations
+
+
+async def _update_sharing_links_jsonb(
+    db_pool: asyncpg.Pool,
+    event_id: str,
+    permission_details: List[Dict[str, Any]],
+) -> None:
+    """Flag removed permissions in the event's sharing_links JSONB column."""
+    removed_ids = {
+        d["permission_id"] for d in permission_details
+        if d.get("status") == "removed" and d.get("permission_id")
+    }
+    if not removed_ids:
+        return
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT sharing_links FROM events WHERE event_id = $1", event_id,
+        )
+        if not row or not row["sharing_links"]:
+            return
+
+        raw = row["sharing_links"]
+        if isinstance(raw, str):
+            try:
+                links = json.loads(raw)
+            except (ValueError, TypeError):
+                return
+        elif isinstance(raw, list):
+            links = raw
+        else:
+            return
+
+        changed = False
+        for link in links:
+            if isinstance(link, dict) and link.get("permission_id") in removed_ids:
+                link["removed"] = True
+                link["removed_at"] = now_iso
+                changed = True
+
+        if changed:
+            await conn.execute(
+                "UPDATE events SET sharing_links = $1::jsonb WHERE event_id = $2",
+                json.dumps(links), event_id,
+            )
+
+
 async def execute_remediation(
     row: Dict[str, Any],
     db_pool: asyncpg.Pool,
@@ -69,8 +212,11 @@ async def execute_remediation(
     Steps:
     1. Load event + verdict + user profile from DB
     2. Remove anonymous/org-wide sharing permissions via Graph API
-    3. Build and send a remediation report email
-    4. Update the remediations row with results
+    2b. Cascade: also remove parent folder's sharing permissions if applicable
+    3. Validate all links were removed
+    4. Update sharing_links JSONB on affected events
+    5. Build and send a remediation report email
+    6. Update the remediations row with results
     """
     remediation_id: int = row["id"]
     event_id: str = row["event_id"]
@@ -99,6 +245,14 @@ async def execute_remediation(
             event["user_id"], config.user_profile_cache_days
         )
 
+        # Load parent event for cascade
+        parent_event = None
+        if event.get("parent_event_id"):
+            parent_event = await conn.fetchrow(
+                "SELECT * FROM events WHERE event_id = $1",
+                event["parent_event_id"],
+            )
+
     drive_id = event.get("drive_id")
     item_id = event.get("item_id_graph")
 
@@ -108,46 +262,12 @@ async def execute_remediation(
     permission_details: List[Dict[str, Any]] = []
 
     if drive_id and item_id:
-        try:
-            all_perms = await get_sharing_permissions(auth, drive_id, item_id)
-        except Exception as exc:
-            logger.error("Failed to list permissions for %s: %s", event_id, exc)
-            all_perms = []
-            permission_details.append({
-                "error": f"Failed to list permissions: {exc}",
-            })
-
-        for perm in all_perms:
-            link = perm.get("link")
-            if not link:
-                continue
-            scope = link.get("scope", "").lower()
-            if scope not in ("anonymous", "organization"):
-                continue
-
-            perm_id = perm.get("id")
-            if not perm_id:
-                continue
-
-            detail: Dict[str, Any] = {
-                "permission_id": perm_id,
-                "scope": scope,
-                "type": link.get("type", "unknown"),
-            }
-            try:
-                await remove_sharing_permission(auth, drive_id, item_id, perm_id)
-                detail["status"] = "removed"
-                permissions_removed += 1
-                await audit.log(event_id, "permission_removed", detail)
-            except Exception as exc:
-                detail["status"] = "failed"
-                detail["error"] = str(exc)
-                permissions_failed += 1
-                await audit.log(
-                    event_id, "permission_removal_failed", detail, status="error",
-                    error=str(exc),
-                )
-            permission_details.append(detail)
+        removed, failed, details = await _remove_permissions_for_item(
+            auth, audit, db_pool, event_id, drive_id, item_id, label="file",
+        )
+        permissions_removed += removed
+        permissions_failed += failed
+        permission_details.extend(details)
     else:
         permission_details.append({
             "note": "No drive_id/item_id_graph — unable to remove permissions",
@@ -157,7 +277,91 @@ async def execute_remediation(
             {"reason": "Missing drive_id or item_id_graph"},
         )
 
-    # ---- 3. Build and send remediation report (disabled) ----
+    # ---- 2b. Cascade: remove parent folder's sharing permissions ----
+    if parent_event and parent_event.get("drive_id") and parent_event.get("item_id_graph"):
+        parent_removed, parent_failed, parent_details = await _remove_permissions_for_item(
+            auth, audit, db_pool, parent_event["event_id"],
+            parent_event["drive_id"], parent_event["item_id_graph"],
+            label="parent_folder",
+        )
+        permissions_removed += parent_removed
+        permissions_failed += parent_failed
+        permission_details.extend(parent_details)
+
+        await audit.log(
+            event_id, "cascade_parent_remediation",
+            {
+                "parent_event_id": parent_event["event_id"],
+                "parent_removed": parent_removed,
+                "parent_failed": parent_failed,
+            },
+        )
+
+        # Create cascaded remediation row for the parent.
+        # The partial unique index on (event_id) WHERE status IN (...)
+        # prevents duplicates when two children remediate the same parent.
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO remediations (
+                    event_id, requested_by, cascade_source_event_id,
+                    parent_remediation_id, status, completed_at,
+                    permissions_removed, permissions_failed,
+                    permission_details
+                )
+                VALUES ($1, $2, $3, $4, 'completed', NOW(), $5, $6, $7::jsonb)
+                ON CONFLICT (event_id)
+                  WHERE status IN ('pending', 'in_progress', 'completed', 'completed_with_warnings')
+                DO NOTHING
+                """,
+                parent_event["event_id"],
+                row["requested_by"],
+                event_id,
+                remediation_id,
+                parent_removed,
+                parent_failed,
+                json.dumps(parent_details),
+            )
+
+            # Mark the parent event as remediated
+            await conn.execute(
+                "UPDATE events SET status = 'remediated', updated_at = NOW() WHERE event_id = $1",
+                parent_event["event_id"],
+            )
+
+    # ---- 3. Post-removal validation ----
+    validation_passed: Optional[bool] = None
+    validation_details: List[Dict[str, Any]] = []
+
+    if drive_id and item_id:
+        child_ok, child_violations = await _validate_removal(auth, drive_id, item_id)
+        validation_details.append({
+            "item": "file",
+            "passed": child_ok,
+            "violations": child_violations,
+        })
+        validation_passed = child_ok
+
+        if parent_event and parent_event.get("drive_id") and parent_event.get("item_id_graph"):
+            parent_ok, parent_violations = await _validate_removal(
+                auth, parent_event["drive_id"], parent_event["item_id_graph"],
+            )
+            validation_details.append({
+                "item": "parent_folder",
+                "passed": parent_ok,
+                "violations": parent_violations,
+            })
+            if not parent_ok:
+                validation_passed = False
+
+    # ---- 4. Update sharing_links JSONB on affected events ----
+    await _update_sharing_links_jsonb(db_pool, event_id, permission_details)
+    if parent_event:
+        await _update_sharing_links_jsonb(
+            db_pool, parent_event["event_id"], permission_details,
+        )
+
+    # ---- 5. Build and send remediation report (disabled) ----
     to_addresses: List[str] = []
 
     report_sent = False
@@ -234,10 +438,12 @@ async def execute_remediation(
     else:
         logger.warning("Skipping remediation report — no SMTP or recipients configured")
 
-    # ---- 4. Update remediations row ----
-    status = "completed" if permissions_failed == 0 else "completed"
-    if not drive_id or not item_id:
-        # Still completed — we sent the report even if we couldn't remove permissions
+    # ---- 6. Update remediations row ----
+    if validation_passed is False:
+        status = "completed_with_warnings"
+    elif permissions_failed > 0:
+        status = "completed_with_warnings"
+    else:
         status = "completed"
 
     async with db_pool.acquire() as conn:
@@ -252,8 +458,10 @@ async def execute_remediation(
                 report_sent = $6,
                 report_sent_at = $7,
                 report_recipients = $8::jsonb,
+                validation_passed = $9,
+                validation_details = $10::jsonb,
                 updated_at = $2
-            WHERE id = $9
+            WHERE id = $11
             """,
             status,
             datetime.now(timezone.utc),
@@ -263,10 +471,12 @@ async def execute_remediation(
             report_sent,
             report_sent_at,
             json.dumps(to_addresses),
+            validation_passed,
+            json.dumps(validation_details),
             remediation_id,
         )
 
-    # ---- 5. Mark event as remediated ----
+    # ---- 7. Mark event as remediated ----
     async with db_pool.acquire() as conn:
         await conn.execute(
             "UPDATE events SET status = 'remediated', updated_at = NOW() WHERE event_id = $1",
@@ -280,14 +490,17 @@ async def execute_remediation(
             "permissions_removed": permissions_removed,
             "permissions_failed": permissions_failed,
             "report_sent": report_sent,
+            "validation_passed": validation_passed,
+            "cascaded_to_parent": parent_event is not None,
         },
     )
     logger.info(
-        "Remediation %d completed for %s: removed=%d failed=%d report=%s",
-        remediation_id, event_id, permissions_removed, permissions_failed, report_sent,
+        "Remediation %d completed for %s: removed=%d failed=%d report=%s validation=%s",
+        remediation_id, event_id, permissions_removed, permissions_failed,
+        report_sent, validation_passed,
     )
 
-    # ---- 6. Queue user notification (true_positive) ----
+    # ---- 8. Queue user notification (true_positive) ----
     if redis_conn is not None:
         try:
             await redis_conn.rpush(

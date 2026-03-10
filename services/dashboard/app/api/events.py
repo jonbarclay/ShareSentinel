@@ -178,6 +178,34 @@ async def get_event(request: Request, event_id: str):
             )
             lifecycle_records = [dict(r) for r in lc_rows]
 
+    # Fetch parent event info for child files (folder cascade context)
+    parent_event = None
+    parent_lifecycle = []
+    if event and event.get("parent_event_id"):
+        async with pool.acquire() as conn:
+            pe_row = await conn.fetchrow(
+                """
+                SELECT event_id, file_name, sharing_links, status,
+                       sharing_type, sharing_scope
+                FROM events WHERE event_id = $1
+                """,
+                event["parent_event_id"],
+            )
+            if pe_row:
+                parent_event = dict(pe_row)
+            pl_rows = await conn.fetch(
+                """
+                SELECT link_created_at, ms_expiration_at, status,
+                       link_created_at + INTERVAL '180 days' AS enforced_expiration_at,
+                       file_name, sharing_scope, sharing_type, link_url, permission_id
+                FROM sharing_link_lifecycle
+                WHERE event_id = $1
+                ORDER BY link_created_at
+                """,
+                event["parent_event_id"],
+            )
+            parent_lifecycle = [dict(r) for r in pl_rows]
+
     return {
         "event": dict(event) if event else None,
         "verdict": dict(verdict) if verdict else None,
@@ -185,4 +213,6 @@ async def get_event(request: Request, event_id: str):
         "user_profile": user_profile,
         "child_events": child_events,
         "lifecycle": lifecycle_records,
+        "parent_event": parent_event,
+        "parent_lifecycle": parent_lifecycle,
     }

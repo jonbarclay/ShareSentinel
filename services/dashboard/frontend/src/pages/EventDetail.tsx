@@ -34,6 +34,15 @@ interface LifecycleRecord {
   permission_id: string | null;
 }
 
+interface ParentEvent {
+  event_id: string;
+  file_name: string | null;
+  sharing_links: unknown;
+  status: string | null;
+  sharing_type: string | null;
+  sharing_scope: string | null;
+}
+
 interface Detail {
   event: Record<string, unknown> | null;
   verdict: Record<string, unknown> | null;
@@ -49,6 +58,8 @@ interface Detail {
   } | null;
   child_events?: ChildEvent[];
   lifecycle?: LifecycleRecord[];
+  parent_event?: ParentEvent | null;
+  parent_lifecycle?: LifecycleRecord[];
 }
 
 const labelCss: React.CSSProperties = { color: uvu.textMuted, fontSize: "0.75rem", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.04em" };
@@ -276,6 +287,45 @@ export default function EventDetail() {
         </div>
       )}
 
+      {data.parent_event && (
+        <div style={{
+          padding: "12px 16px",
+          marginBottom: "1rem",
+          borderRadius: 8,
+          background: "#fff3cd",
+          color: "#856404",
+          border: "1px solid #ffeeba",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+        }}>
+          <div>
+            <span style={{ fontWeight: 700 }}>Shared via Parent Folder: </span>
+            This file inherits sharing access from folder <strong>{data.parent_event.file_name ?? "Unknown"}</strong>.
+            {data.parent_event.status === "remediated" && (
+              <span style={{ marginLeft: 8, fontSize: "0.82rem", fontWeight: 600, color: "#00875a" }}>(Folder remediated)</span>
+            )}
+          </div>
+          <button
+            onClick={() => nav(`/events/${encodeURIComponent(data.parent_event!.event_id)}`)}
+            style={{
+              padding: "6px 14px",
+              background: "#856404",
+              color: "#fff",
+              border: "none",
+              borderRadius: 6,
+              cursor: "pointer",
+              fontWeight: 600,
+              fontSize: "0.82rem",
+              whiteSpace: "nowrap",
+            }}
+          >
+            View Folder Event
+          </button>
+        </div>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
         <div style={card}>
           <h3 style={{ marginBottom: "1rem", fontSize: "0.95rem", fontWeight: 600 }}>Event Details</h3>
@@ -316,27 +366,57 @@ export default function EventDetail() {
           <Field label="Received" value={e.received_at ? new Date(String(e.received_at)).toLocaleString() : null} />
           {(() => {
             const raw = e.sharing_links;
-            const links: Array<{url: string; label: string}> = Array.isArray(raw) ? raw : typeof raw === "string" ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : [];
+            const links: Array<{url: string; label: string; removed?: boolean; removed_at?: string}> = Array.isArray(raw) ? raw : typeof raw === "string" ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : [];
             if (links.length > 0) {
               return (
                 <div style={{ marginTop: 10 }}>
                   <span style={labelCss}>Sharing Links</span>
                   <div style={{ marginTop: 6 }}>
-                    {links.map((link, i) => (
-                      <div key={i} style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{
-                          display: "inline-block",
-                          background: link.label.startsWith("Anonymous") ? "#fce8e4" : uvu.seaHaze,
-                          color: link.label.startsWith("Anonymous") ? uvu.brick : uvu.greenD2,
-                          padding: "2px 8px",
-                          borderRadius: 4,
-                          fontSize: "0.72rem",
-                          fontWeight: 600,
-                        }}>{link.label}</span>
-                        <a href={link.url} target="_blank" rel="noopener noreferrer"
-                          style={{ color: uvu.greenL1, fontSize: "0.85rem", wordBreak: "break-all" }}>{link.url}</a>
-                      </div>
-                    ))}
+                    {links.map((link, i) => {
+                      const isRemoved = Boolean(link.removed);
+                      return (
+                        <div key={i} style={{
+                          marginBottom: 6,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: isRemoved ? "4px 8px" : undefined,
+                          background: isRemoved ? "#ffebe6" : undefined,
+                          borderRadius: isRemoved ? 4 : undefined,
+                        }}>
+                          <span style={{
+                            display: "inline-block",
+                            background: isRemoved ? "#ffebe6" : link.label.startsWith("Anonymous") ? "#fce8e4" : uvu.seaHaze,
+                            color: isRemoved ? "#de350b" : link.label.startsWith("Anonymous") ? uvu.brick : uvu.greenD2,
+                            padding: "2px 8px",
+                            borderRadius: 4,
+                            fontSize: "0.72rem",
+                            fontWeight: 600,
+                            textDecoration: isRemoved ? "line-through" : undefined,
+                          }}>{link.label}</span>
+                          <a href={link.url} target="_blank" rel="noopener noreferrer"
+                            style={{
+                              color: isRemoved ? "#de350b" : uvu.greenL1,
+                              fontSize: "0.85rem",
+                              wordBreak: "break-all",
+                              textDecoration: isRemoved ? "line-through" : undefined,
+                              opacity: isRemoved ? 0.7 : undefined,
+                            }}>{link.url}</a>
+                          {isRemoved && (
+                            <span style={{
+                              display: "inline-block",
+                              background: "#de350b",
+                              color: "#fff",
+                              padding: "1px 6px",
+                              borderRadius: 3,
+                              fontSize: "0.68rem",
+                              fontWeight: 700,
+                              flexShrink: 0,
+                            }}>Removed</span>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               );
@@ -443,6 +523,75 @@ export default function EventDetail() {
         {v && v.second_look_performed === true && <SecondLookCard v={v} />}
 
         {data.lifecycle && data.lifecycle.length > 0 && <LifecycleCard records={data.lifecycle} />}
+
+        {data.parent_event && (() => {
+          const raw = data.parent_event.sharing_links;
+          const links: Array<{url: string; label: string; removed?: boolean; removed_at?: string}> = Array.isArray(raw) ? raw : typeof raw === "string" ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : [];
+          if (links.length === 0) return null;
+          return (
+            <div style={{ ...card, gridColumn: "1 / -1" }}>
+              <h3 style={{ marginBottom: "1rem", fontSize: "0.95rem", fontWeight: 600 }}>
+                Folder Sharing Links
+                <span style={{ fontWeight: 400, fontSize: "0.82rem", color: uvu.textMuted, marginLeft: 8 }}>
+                  (from parent: {data.parent_event.file_name ?? "Unknown"})
+                </span>
+              </h3>
+              <div>
+                {links.map((link, i) => {
+                  const isRemoved = Boolean(link.removed);
+                  return (
+                    <div key={i} style={{
+                      marginBottom: 6,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: isRemoved ? "4px 8px" : undefined,
+                      background: isRemoved ? "#ffebe6" : undefined,
+                      borderRadius: isRemoved ? 4 : undefined,
+                    }}>
+                      <span style={{
+                        display: "inline-block",
+                        background: isRemoved ? "#ffebe6" : link.label.startsWith("Anonymous") ? "#fce8e4" : uvu.seaHaze,
+                        color: isRemoved ? "#de350b" : link.label.startsWith("Anonymous") ? uvu.brick : uvu.greenD2,
+                        padding: "2px 8px",
+                        borderRadius: 4,
+                        fontSize: "0.72rem",
+                        fontWeight: 600,
+                        textDecoration: isRemoved ? "line-through" : undefined,
+                      }}>{link.label}</span>
+                      <a href={link.url} target="_blank" rel="noopener noreferrer"
+                        style={{
+                          color: isRemoved ? "#de350b" : uvu.greenL1,
+                          fontSize: "0.85rem",
+                          wordBreak: "break-all",
+                          textDecoration: isRemoved ? "line-through" : undefined,
+                          opacity: isRemoved ? 0.7 : undefined,
+                        }}>{link.url}</a>
+                      {isRemoved && (
+                        <span style={{
+                          display: "inline-block",
+                          background: "#de350b",
+                          color: "#fff",
+                          padding: "1px 6px",
+                          borderRadius: 3,
+                          fontSize: "0.68rem",
+                          fontWeight: 700,
+                          flexShrink: 0,
+                        }}>Removed</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
+
+        {data.parent_lifecycle && data.parent_lifecycle.length > 0 && (
+          <div style={{ gridColumn: "1 / -1" }}>
+            <LifecycleCard records={data.parent_lifecycle} />
+          </div>
+        )}
       </div>
 
       {data.child_events && data.child_events.length > 0 && (
@@ -511,6 +660,7 @@ export default function EventDetail() {
             currentDisposition={v.analyst_disposition as string | null}
             currentNotes={v.analyst_notes as string | null}
             onSaved={load}
+            isChildOfFolder={Boolean(data.parent_event)}
           />
         </div>
       )}

@@ -267,7 +267,9 @@ async def get_remediation(request: Request, event_id: str):
             SELECT id, event_id, requested_by, requested_at, action_type,
                    status, started_at, completed_at,
                    permissions_removed, permissions_failed,
-                   report_sent, error_message
+                   permission_details, report_sent, error_message,
+                   validation_passed, validation_details,
+                   cascade_source_event_id
             FROM remediations
             WHERE event_id = $1
             ORDER BY created_at DESC

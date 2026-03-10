@@ -28,8 +28,9 @@ DEDUP_TTL_SECONDS = 86400  # 24 hours
 
 # Audit query polling
 QUERY_POLL_INTERVAL_S = 10
-QUERY_TIMEOUT_S = 600  # 10 minutes max wait
+QUERY_TIMEOUT_S = 1800  # 30 minutes max wait (Graph beta API is slow)
 OVERLAP_MINUTES = 5  # overlap window to avoid missing boundary events
+MAX_QUERY_WINDOW_MINUTES = 120  # chunk large windows; Graph API latency is per-query not per-window
 
 
 class AuditLogPoller:
@@ -50,11 +51,60 @@ class AuditLogPoller:
         ]
 
     async def poll(self) -> dict:
-        """Run one poll cycle: query audit logs since last run, push new events to Redis."""
+        """Run one poll cycle: query audit logs since last run, push new events to Redis.
+
+        If the time window since the last successful poll exceeds
+        MAX_QUERY_WINDOW_MINUTES, the window is broken into smaller chunks
+        to avoid Graph API query timeouts on large ranges.
+        """
         start_time = await self._get_last_poll_time()
+        end_time = datetime.now(timezone.utc)
+        total_gap = end_time - start_time
+
+        if total_gap > timedelta(minutes=MAX_QUERY_WINDOW_MINUTES + OVERLAP_MINUTES):
+            logger.info(
+                "Large poll gap detected (%.1f hours). Chunking into %d-minute windows.",
+                total_gap.total_seconds() / 3600,
+                MAX_QUERY_WINDOW_MINUTES,
+            )
+            return await self._poll_chunked(start_time, end_time)
+
+        return await self._poll_window(start_time, end_time, save_state=True)
+
+    async def _poll_chunked(self, start_time: datetime, final_end: datetime) -> dict:
+        """Process a large time gap in sequential chunks."""
+        total_records = 0
+        total_new = 0
+        chunk_start = start_time
+
+        while chunk_start < final_end:
+            chunk_end = min(
+                chunk_start + timedelta(minutes=MAX_QUERY_WINDOW_MINUTES),
+                final_end,
+            )
+            logger.info(
+                "Processing chunk: %s -> %s",
+                chunk_start.isoformat(),
+                chunk_end.isoformat(),
+            )
+            stats = await self._poll_window(chunk_start, chunk_end, save_state=True)
+            total_records += stats["total"]
+            total_new += stats["new"]
+            # Advance to next chunk (the saved poll time is chunk_end)
+            chunk_start = chunk_end
+
+        logger.info(
+            "Chunked poll complete: %d total records, %d new jobs across all chunks",
+            total_records, total_new,
+        )
+        return {"total": total_records, "new": total_new}
+
+    async def _poll_window(
+        self, start_time: datetime, end_time: datetime, *, save_state: bool
+    ) -> dict:
+        """Query a single time window and enqueue new events."""
         # Apply overlap window to avoid missing events at boundaries
         query_start = start_time - timedelta(minutes=OVERLAP_MINUTES)
-        end_time = datetime.now(timezone.utc)
 
         logger.info(
             "Starting audit poll cycle: %s -> %s",
@@ -73,7 +123,8 @@ class AuditLogPoller:
                 await self._push_to_queue(job)
                 new_count += 1
 
-        await self._save_last_poll_time(end_time, new_count)
+        if save_state:
+            await self._save_last_poll_time(end_time, new_count)
         logger.info("Audit poll complete: %d records, %d new jobs enqueued", len(records), new_count)
         return {"total": len(records), "new": new_count}
 
@@ -273,14 +324,38 @@ class AuditLogPoller:
         """Upsert last_poll_time in Postgres."""
         await self._db.execute(
             """
-            INSERT INTO audit_poll_state (id, last_poll_time, last_poll_status, events_found, updated_at)
-            VALUES (1, $1, 'success', $2, NOW())
+            INSERT INTO audit_poll_state (id, last_poll_time, last_poll_status, events_found, error_message, updated_at)
+            VALUES (1, $1, 'success', $2, NULL, NOW())
             ON CONFLICT (id) DO UPDATE SET
                 last_poll_time = $1,
                 last_poll_status = 'success',
                 events_found = $2,
+                error_message = NULL,
                 updated_at = NOW()
             """,
             poll_time,
             events_found,
         )
+
+    async def save_poll_error(self, error_text: str) -> None:
+        """Record a poll failure in audit_poll_state.
+
+        Updates updated_at so the watchdog can distinguish 'dead' (no updates)
+        from 'alive but failing' (recent updates with error status).
+        """
+        # Cap error text to avoid unbounded storage
+        truncated = error_text[:2000] if error_text else "unknown error"
+        try:
+            await self._db.execute(
+                """
+                INSERT INTO audit_poll_state (id, last_poll_status, error_message, updated_at)
+                VALUES (1, 'error', $1, NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                    last_poll_status = 'error',
+                    error_message = $1,
+                    updated_at = NOW()
+                """,
+                truncated,
+            )
+        except Exception:
+            logger.warning("Failed to save poll error to DB", exc_info=True)

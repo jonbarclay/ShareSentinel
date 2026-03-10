@@ -7,6 +7,7 @@ interface Props {
   currentDisposition?: string | null;
   currentNotes?: string | null;
   onSaved: () => void;
+  isChildOfFolder?: boolean;
 }
 
 interface RemediationStatus {
@@ -16,6 +17,9 @@ interface RemediationStatus {
   permissions_failed: number;
   report_sent: boolean;
   error_message: string | null;
+  validation_passed?: boolean | null;
+  validation_details?: unknown;
+  cascade_source_event_id?: string | null;
 }
 
 const DISPOSITIONS = [
@@ -30,6 +34,7 @@ const BADGE_STYLES: Record<string, { bg: string; fg: string; label: string }> = 
   pending: { bg: "#fffae6", fg: "#ca8a04", label: "Queued" },
   in_progress: { bg: "#deebff", fg: "#0052cc", label: "Processing..." },
   completed: { bg: "#e3fcef", fg: "#00875a", label: "Sharing link removed and report sent" },
+  completed_with_warnings: { bg: "#fff3cd", fg: "#856404", label: "Completed with warnings — some links may remain" },
   failed: { bg: "#ffebe6", fg: "#de350b", label: "Remediation failed" },
   skipped: { bg: "#f4f5f7", fg: "#6b778c", label: "Skipped" },
 };
@@ -39,6 +44,7 @@ export default function AnalystReviewForm({
   currentDisposition,
   currentNotes,
   onSaved,
+  isChildOfFolder,
 }: Props) {
   const [disposition, setDisposition] = useState(currentDisposition ?? "");
   const [notes, setNotes] = useState(currentNotes ?? "");
@@ -86,14 +92,17 @@ export default function AnalystReviewForm({
   async function submit(e: React.FormEvent) {
     e.preventDefault();
 
-    if (
-      disposition === "true_positive" &&
-      !window.confirm(
+    if (disposition === "true_positive") {
+      const cascadeNote = isChildOfFolder
+        ? "\n\nThis file is shared via a parent folder. Remediation will also remove " +
+          "sharing links on the parent folder."
+        : "";
+      if (!window.confirm(
         "Marking as True Positive will remove the sharing link and send a report " +
-        "to the file owner and security team. Continue?"
-      )
-    ) {
-      return;
+        "to the file owner and security team." + cascadeNote + "\n\nContinue?"
+      )) {
+        return;
+      }
     }
 
     setSaving(true);
@@ -236,7 +245,7 @@ export default function AnalystReviewForm({
           }}
         >
           {badge.label}
-          {remediation.status === "completed" && remediation.permissions_removed > 0 && (
+          {(remediation.status === "completed" || remediation.status === "completed_with_warnings") && remediation.permissions_removed > 0 && (
             <span style={{ fontWeight: 400, marginLeft: 8 }}>
               ({remediation.permissions_removed} permission{remediation.permissions_removed !== 1 ? "s" : ""} removed)
             </span>
@@ -244,6 +253,19 @@ export default function AnalystReviewForm({
           {remediation.status === "failed" && remediation.error_message && (
             <div style={{ fontWeight: 400, marginTop: 4, fontSize: "0.8rem" }}>
               {remediation.error_message}
+            </div>
+          )}
+          {remediation.validation_passed === false && (
+            <div style={{
+              marginTop: 6,
+              padding: "6px 10px",
+              background: "#ffebe6",
+              color: "#de350b",
+              borderRadius: 4,
+              fontSize: "0.8rem",
+              fontWeight: 600,
+            }}>
+              Validation failed: some sharing links could not be confirmed as removed
             </div>
           )}
         </div>

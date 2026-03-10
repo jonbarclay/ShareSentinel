@@ -13,14 +13,37 @@ import asyncio
 import logging
 import re
 import sys
+import time
 
 import asyncpg
+import redis.asyncio as aioredis
 
 from .config import LifecycleConfig
 from .graph_api import GraphAuth
 from .processor import process_lifecycle_milestones
 
 logger = logging.getLogger(__name__)
+
+# -- Heartbeat ---------------------------------------------------------------
+
+HEARTBEAT_INTERVAL_S = 60
+HEARTBEAT_KEYS = {
+    "audit_poller": "sharesentinel:lifecycle:heartbeat:audit_poller",
+    "lifecycle": "sharesentinel:lifecycle:heartbeat:lifecycle",
+    "site_policy": "sharesentinel:lifecycle:heartbeat:site_policy",
+    "folder_rescan": "sharesentinel:lifecycle:heartbeat:folder_rescan",
+}
+
+
+async def _heartbeat_task(redis_client: aioredis.Redis, loop_name: str) -> None:
+    """Write a heartbeat timestamp to Redis every HEARTBEAT_INTERVAL_S seconds."""
+    key = HEARTBEAT_KEYS[loop_name]
+    while True:
+        try:
+            await redis_client.set(key, str(int(time.time())))
+        except Exception:
+            logger.warning("Failed to write heartbeat for %s", loop_name, exc_info=True)
+        await asyncio.sleep(HEARTBEAT_INTERVAL_S)
 
 
 async def lifecycle_loop(
@@ -29,6 +52,9 @@ async def lifecycle_loop(
     config: LifecycleConfig,
 ) -> None:
     """Run the lifecycle milestone processor on a fixed interval."""
+    redis_client = aioredis.from_url(config.redis_url)
+    asyncio.create_task(_heartbeat_task(redis_client, "lifecycle"))
+
     interval_seconds = config.check_interval_hours * 3600
     while True:
         try:
@@ -52,8 +78,6 @@ async def site_policy_loop(
     """
     import json
 
-    import redis.asyncio as aioredis
-
     from .site_policy_scanner import (
         apply_sharing_for_site,
         apply_visibility_for_group,
@@ -63,6 +87,8 @@ async def site_policy_loop(
     )
 
     redis_client = aioredis.from_url(config.redis_url)
+    asyncio.create_task(_heartbeat_task(redis_client, "site_policy"))
+
     interval_seconds = config.site_policy_interval_hours * 3600
 
     logger.info(
@@ -195,11 +221,11 @@ async def folder_rescan_loop(
     config: LifecycleConfig,
 ) -> None:
     """Run the folder rescan processor on a fixed interval."""
-    import redis.asyncio as aioredis
-
     from .folder_rescan import run_folder_rescan
 
     redis_client = aioredis.from_url(config.redis_url)
+    asyncio.create_task(_heartbeat_task(redis_client, "folder_rescan"))
+
     interval_seconds = config.folder_rescan_interval_hours * 3600
 
     logger.info(
@@ -224,11 +250,11 @@ async def audit_poll_loop(
     config: LifecycleConfig,
 ) -> None:
     """Run the audit log poller on a fixed interval."""
-    import redis.asyncio as aioredis
-
     from .audit_poller import AuditLogPoller
 
     redis_client = aioredis.from_url(config.redis_url)
+    asyncio.create_task(_heartbeat_task(redis_client, "audit_poller"))
+
     poller = AuditLogPoller(auth, redis_client, db_pool, config)
     interval_seconds = config.audit_poll_interval_minutes * 60
 
@@ -238,8 +264,9 @@ async def audit_poll_loop(
         try:
             stats = await poller.poll()
             logger.info("Audit poll cycle complete: %s", stats)
-        except Exception:
+        except Exception as exc:
             logger.exception("Error in audit poll cycle")
+            await poller.save_poll_error(str(exc))
         logger.info("Audit poller sleeping %d seconds until next cycle", interval_seconds)
         await asyncio.sleep(interval_seconds)
 
