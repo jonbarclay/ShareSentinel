@@ -267,6 +267,29 @@ async def recover_orphaned_queued_events(
         logger.info("Startup recovery sweep: no orphaned 'queued' events found")
         return
 
+    # An old 'queued' row is only an orphan if its job is NOT still sitting on
+    # the Redis queue (with a deep backlog, rows legitimately stay 'queued'
+    # long past the retry backoff). Scan the queue once and exclude those.
+    queued_ids: set[str] = set()
+    try:
+        for item in await redis_conn.lrange(QUEUE_KEY, 0, -1):
+            try:
+                queued_ids.add(json.loads(item).get("event_id", ""))
+            except (json.JSONDecodeError, AttributeError):
+                continue
+        for item in await redis_conn.lrange(PROCESSING_KEY, 0, -1):
+            try:
+                queued_ids.add(json.loads(item).get("event_id", ""))
+            except (json.JSONDecodeError, AttributeError):
+                continue
+    except Exception:
+        logger.exception("Could not scan Redis queue for orphan filtering — skipping sweep")
+        return
+    orphans = [r for r in orphans if r["event_id"] not in queued_ids]
+    if not orphans:
+        logger.info("Startup recovery sweep: all old 'queued' events still have queue entries")
+        return
+
     logger.warning(
         "Startup recovery sweep: found %d orphaned 'queued' events (age > %dm)",
         len(orphans), min_age_minutes,

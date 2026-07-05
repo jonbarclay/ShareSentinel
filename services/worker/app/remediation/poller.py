@@ -31,6 +31,24 @@ async def remediation_poller(
     """
     logger.info("Remediation poller started (interval=%ds)", POLL_INTERVAL_S)
 
+    # Reclaim rows orphaned in 'in_progress' by a prior crash/restart. This
+    # poller is single-instance, so at startup nothing can legitimately be
+    # in flight; without this sweep an orphaned row was never picked up again
+    # (_claim_next only selects 'pending').
+    try:
+        async with db_pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE remediations
+                SET status = 'pending', started_at = NULL, updated_at = NOW()
+                WHERE status = 'in_progress'
+                """
+            )
+        if result != "UPDATE 0":
+            logger.warning("Reclaimed orphaned in_progress remediations: %s", result)
+    except Exception:
+        logger.exception("Failed to reclaim orphaned remediations at startup")
+
     while True:
         try:
             row = await _claim_next(db_pool)

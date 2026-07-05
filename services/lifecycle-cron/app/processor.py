@@ -14,6 +14,10 @@ from .notifier import LifecycleNotifier
 
 logger = logging.getLogger(__name__)
 
+# Consecutive removal failures before a row is parked as 'error' instead of
+# retrying on the next daily run.
+MAX_REMOVAL_ATTEMPTS = 5
+
 # (days_since_creation, db_column, days_remaining)
 MILESTONES: List[Tuple[int, str, int]] = [
     (120, "notified_120d_at", 60),
@@ -200,11 +204,19 @@ async def _process_removal(
         logger.error(
             "Failed to remove permission lifecycle_id=%d: %s", lifecycle_id, exc,
         )
+        # Retry with cap: keep the row 'active' so tomorrow's run retries the
+        # removal (transient Graph failures previously parked rows in 'error'
+        # forever — the daily fetch only selects 'active', so an expired link
+        # stayed live with no retry). After MAX_REMOVAL_ATTEMPTS consecutive
+        # failures, park it as 'error' for operator attention.
+        attempts = (row.get("removal_attempts") or 0) + 1
+        terminal = attempts >= MAX_REMOVAL_ATTEMPTS
         async with db_pool.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE sharing_link_lifecycle
-                SET status = 'error',
+                SET status = $4,
+                    removal_attempts = $5,
                     removal_attempted_at = $1,
                     removal_succeeded = false,
                     removal_error = $2,
@@ -212,6 +224,13 @@ async def _process_removal(
                 WHERE id = $3
                 """,
                 now, str(exc), lifecycle_id,
+                "error" if terminal else "active",
+                attempts,
+            )
+        if terminal:
+            logger.error(
+                "Removal failed %d times for lifecycle_id=%d — parking as 'error'",
+                attempts, lifecycle_id,
             )
         raise
 
