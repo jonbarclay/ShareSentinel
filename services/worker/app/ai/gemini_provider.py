@@ -134,6 +134,9 @@ class GeminiProvider(BaseAIProvider):
         except (httpx.TimeoutException, httpx.ConnectError):
             logger.warning("Gemini transient transport error")
             raise TransientAIError("Gemini transport timeout/connectivity failure")
+        except TransientAIError:
+            # e.g. parse_ai_response on unparseable output — propagate for retry.
+            raise
         except Exception as exc:
             logger.exception("Gemini analysis failed")
             return AnalysisResponse(

@@ -100,6 +100,9 @@ class AnthropicProvider(BaseAIProvider):
                 processing_time_seconds=time.time() - start_time,
                 success=False, error=str(exc),
             )
+        except TransientAIError:
+            # e.g. parse_ai_response on unparseable output — propagate for retry.
+            raise
         except Exception as exc:
             logger.exception("Anthropic analysis failed")
             return AnalysisResponse(

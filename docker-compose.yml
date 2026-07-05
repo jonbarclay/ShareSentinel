@@ -67,6 +67,8 @@ services:
 
       # Security / remediation
       - SECURITY_EMAIL=${SECURITY_EMAIL:-}
+      # Immediate single-site remediation on out-of-policy share-link events
+      - EVENT_REMEDIATION_ENABLED=${EVENT_REMEDIATION_ENABLED:-false}
 
       # User notifications (post-disposition emails to file owners)
       - USER_NOTIFICATION_ENABLED=${USER_NOTIFICATION_ENABLED:-false}
@@ -202,6 +204,10 @@ services:
 
       # Browser auth (SharePoint root for cookie capture)
       - SHAREPOINT_ROOT_URL=${SHAREPOINT_ROOT_URL:-https://www.office.com}
+
+      # Company-wide sharing exception group (read-only display of members)
+      - COMPANY_WIDE_SHARING_EXCEPTION_GROUP_ID=${COMPANY_WIDE_SHARING_EXCEPTION_GROUP_ID:-}
+      - COMPANY_WIDE_SHARING_DRY_RUN=${COMPANY_WIDE_SHARING_DRY_RUN:-true}
     volumes:
       - ./config:/app/config:ro
       - ${AZURE_CERTIFICATE:-./graph-api-cert.pfx}:/app/certs/graph-api-cert.pfx:ro
@@ -234,6 +240,15 @@ services:
       # Database
       - DATABASE_URL=postgresql://${POSTGRES_USER:-sharesentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sharesentinel}
 
+      # Direct Postgres env vars (used by PowerShell Invoke-Psql helper when
+      # IN_CONTAINER=true so PS scripts can hit Postgres without `docker exec`).
+      - IN_CONTAINER=true
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-sharesentinel}
+      - POSTGRES_DB=${POSTGRES_DB:-sharesentinel}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+
       # Redis (audit log poller)
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
 
@@ -255,16 +270,23 @@ services:
       # Lifecycle settings
       - LIFECYCLE_CHECK_INTERVAL_HOURS=${LIFECYCLE_CHECK_INTERVAL_HOURS:-24}
       - LIFECYCLE_MAX_DAYS=${LIFECYCLE_MAX_DAYS:-180}
+      - LIFECYCLE_NOTIFICATIONS_ENABLED=${LIFECYCLE_NOTIFICATIONS_ENABLED:-true}
 
       # Audit log polling
       - AUDIT_POLL_ENABLED=${AUDIT_POLL_ENABLED:-true}
       - AUDIT_POLL_INTERVAL_MINUTES=${AUDIT_POLL_INTERVAL_MINUTES:-15}
+      # Also ingest SiteCollectionCreated / "Add group." / "Add user." events
+      # so new sites, OneDrives, and groups are policy-enforced on creation.
+      # Requires AuditLogsQuery.Read.All (not just the SharePoint variant).
+      - AUDIT_POLL_PROVISIONING_ENABLED=${AUDIT_POLL_PROVISIONING_ENABLED:-false}
 
       # Site policy enforcement (dual: visibility + sharing)
       - SITE_POLICY_ENABLED=${SITE_POLICY_ENABLED:-false}
       - SITE_POLICY_INTERVAL_HOURS=${SITE_POLICY_INTERVAL_HOURS:-24}
       - SITE_POLICY_ENABLED_SHARING_CAPABILITY=${SITE_POLICY_ENABLED_SHARING_CAPABILITY:-ExternalUserAndGuestSharing}
       - SITE_POLICY_DISABLED_SHARING_CAPABILITY=${SITE_POLICY_DISABLED_SHARING_CAPABILITY:-ExternalUserSharingOnly}
+      # Include OneDrive personal sites in the scheduled sharing scan
+      - SITE_POLICY_INCLUDE_ONEDRIVE=${SITE_POLICY_INCLUDE_ONEDRIVE:-true}
       - SHAREPOINT_ADMIN_URL=${SHAREPOINT_ADMIN_URL}
 
       # Folder rescan
@@ -272,11 +294,54 @@ services:
       - FOLDER_RESCAN_INTERVAL_HOURS=${FOLDER_RESCAN_INTERVAL_HOURS:-168}
       - FOLDER_RESCAN_BATCH_SIZE=${FOLDER_RESCAN_BATCH_SIZE:-50}
 
+      # Company-wide sharing exception group (members of this Entra group are
+      # exempt from CWS enforcement on their OneDrive). Shared by every CWS
+      # PowerShell script.
+      - COMPANY_WIDE_SHARING_EXCEPTION_GROUP_ID=${COMPANY_WIDE_SHARING_EXCEPTION_GROUP_ID:-}
+
+      # CWS verification sweep (detect-only, PowerShell-based)
+      - CWS_VERIFICATION_ENABLED=${CWS_VERIFICATION_ENABLED:-false}
+      - CWS_VERIFICATION_INTERVAL_HOURS=${CWS_VERIFICATION_INTERVAL_HOURS:-168}
+
+      # CWS drift remediation (daily, drains cws_verification_events)
+      - CWS_DRIFT_REMEDIATION_ENABLED=${CWS_DRIFT_REMEDIATION_ENABLED:-false}
+      - CWS_DRIFT_REMEDIATION_INTERVAL_HOURS=${CWS_DRIFT_REMEDIATION_INTERVAL_HOURS:-24}
+      - CWS_DRIFT_REMEDIATION_DRY_RUN=${CWS_DRIFT_REMEDIATION_DRY_RUN:-true}
+
+      # CWS bulk remediation (monthly full-tenant safety net)
+      - CWS_BULK_REMEDIATION_ENABLED=${CWS_BULK_REMEDIATION_ENABLED:-false}
+      - CWS_BULK_REMEDIATION_INTERVAL_HOURS=${CWS_BULK_REMEDIATION_INTERVAL_HOURS:-720}
+      - CWS_BULK_REMEDIATION_DRY_RUN=${CWS_BULK_REMEDIATION_DRY_RUN:-true}
+      - CWS_BULK_REMEDIATION_THROTTLE=${CWS_BULK_REMEDIATION_THROTTLE:-5}
+
+      # CWS allowlist-action consumer (drains dashboard add/remove triggers)
+      - CWS_ALLOWLIST_ACTION_ENABLED=${CWS_ALLOWLIST_ACTION_ENABLED:-true}
+
+      # CWS exception-group sync (short-interval Graph poll, PS only on diff)
+      - CWS_EXCEPTION_GROUP_SYNC_ENABLED=${CWS_EXCEPTION_GROUP_SYNC_ENABLED:-false}
+      - CWS_EXCEPTION_GROUP_SYNC_INTERVAL_MINUTES=${CWS_EXCEPTION_GROUP_SYNC_INTERVAL_MINUTES:-10}
+      - CWS_EXCEPTION_GROUP_SYNC_DRY_RUN=${CWS_EXCEPTION_GROUP_SYNC_DRY_RUN:-true}
+
+      # CWS failure diagnostic (wraps SharePoint-Oversharing-Toolkit's
+      # Diagnose-OneDriveSite.ps1 to explain why a Set-PnPTenantSite call
+      # failed, e.g. locked OneDrive, license cap, deleted user)
+      - CWS_FAILURE_DIAGNOSTIC_ENABLED=${CWS_FAILURE_DIAGNOSTIC_ENABLED:-true}
+      - CWS_FAILURE_DIAGNOSTIC_INTERVAL_MINUTES=${CWS_FAILURE_DIAGNOSTIC_INTERVAL_MINUTES:-30}
+      - CWS_FAILURE_DIAGNOSTIC_MAX_PER_SWEEP=${CWS_FAILURE_DIAGNOSTIC_MAX_PER_SWEEP:-20}
+      - CWS_FAILURE_DIAGNOSTIC_REFRESH_AFTER_HOURS=${CWS_FAILURE_DIAGNOSTIC_REFRESH_AFTER_HOURS:-72}
+      - TOOLKIT_PATH=/opt/toolkit
+
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - ./config:/app/config:ro
+      - ./scripts:/app/scripts:ro
       - ${AZURE_CERTIFICATE:-./graph-api-cert.pfx}:/app/certs/graph-api-cert.pfx:ro
+      # SharePoint-Oversharing-Toolkit checkout (Diagnose-OneDriveSite.ps1 etc.).
+      # Set TOOLKIT_HOST_PATH in .env to enable the CWS failure diagnostic. When
+      # unset, the mount points at an empty /tmp dir and the wrapper records
+      # diagnostic_unavailable instead of crashing.
+      - ${TOOLKIT_HOST_PATH:-/tmp/sharesentinel-no-toolkit}:/opt/toolkit:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -327,7 +392,11 @@ services:
   redis:
     image: redis:7-alpine
     container_name: sharesentinel-redis
-    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
+    # noeviction: this Redis backs the job queue, dedup keys, CWS exemption
+    # set, and dashboard sessions (incl. Graph tokens). allkeys-lru could
+    # silently evict queued jobs or the exemption set under memory pressure;
+    # with noeviction, writes fail loudly instead. Usage is ~2MB of 128MB.
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy noeviction --requirepass ${REDIS_PASSWORD}
     volumes:
       - redis_data:/data
     restart: unless-stopped
@@ -344,6 +413,36 @@ services:
       options:
         max-size: "50m"
         max-file: "5"
+
+  # Daily plaintext pg_dump to ./backups (gitignored) with 14-day retention.
+  # Backups contain sensitive verdict/PII data — see docs/review-data-handling.md.
+  db-backup:
+    image: postgres:16-alpine
+    container_name: sharesentinel-db-backup
+    environment:
+      - PGHOST=postgres
+      - PGDATABASE=${POSTGRES_DB:-sharesentinel}
+      - PGUSER=${POSTGRES_USER:-sharesentinel}
+      - PGPASSWORD=${POSTGRES_PASSWORD}
+      - BACKUP_INTERVAL_HOURS=${DB_BACKUP_INTERVAL_HOURS:-24}
+      - BACKUP_RETENTION_DAYS=${DB_BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - ./backups:/backups
+    entrypoint: >
+      sh -c 'while true; do
+        ts=$$(date -u +%Y%m%dT%H%M%SZ);
+        echo "[db-backup] dumping to /backups/sharesentinel_$$ts.sql.gz";
+        pg_dump | gzip > "/backups/sharesentinel_$$ts.sql.gz" &&
+          echo "[db-backup] done" || echo "[db-backup] FAILED";
+        find /backups -name "sharesentinel_*.sql.gz" -mtime +$$BACKUP_RETENTION_DAYS -delete;
+        sleep $$(( BACKUP_INTERVAL_HOURS * 3600 ));
+      done'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - sharesentinel
 
   postgres:
     image: postgres:16-alpine

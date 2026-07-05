@@ -2,6 +2,9 @@
 .env
 *.env.local
 
+# CWS bulk run logs
+scripts/logs/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -55,3 +58,14 @@ backups/
 # Temporary files
 /tmp/
 *.tmp
+
+# Review working data — contains real PII/PHI. NEVER commit.
+# Downloaded flagged documents, legal review exports, breach-review CSVs, run logs.
+review_downloads/
+manual_review_videos/
+/*.csv
+scripts/*.csv
+*.log
+*.jsonl
+onedrive_tier*_review*/
+tier_review_exports/

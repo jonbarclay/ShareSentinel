@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 import asyncpg
 import redis.asyncio as aioredis
 
-from .checker import LoopHealth, check_all_loops
+from .checker import LoopHealth, check_all_loops, check_system_health
 from .config import WatchdogConfig
 from .notifier import TeamsNotifier
 from .remediator import ContainerRemediator
@@ -149,6 +149,43 @@ async def _set_prev_unhealthy(redis_client: aioredis.Redis, unhealthy: bool) -> 
     await redis_client.set(KEY_PREV_UNHEALTHY, "1" if unhealthy else "0", ex=TTL_2H)
 
 
+# Per-finding dedup for system-level alerts (don't re-notify every 2 minutes)
+SYSTEM_ALERT_DEDUP_PREFIX = "sharesentinel:watchdog:sysalert:"
+SYSTEM_ALERT_DEDUP_TTL = 6 * 3600
+
+
+async def check_system_and_alert(
+    redis_client: aioredis.Redis,
+    db_pool: asyncpg.Pool,
+    config: WatchdogConfig,
+    notifier: TeamsNotifier,
+) -> None:
+    """Alert-only sweep: worker health, queue/DLQ depth, failed scans, backlog."""
+    alerts = await check_system_health(redis_client, db_pool, config)
+    for a in alerts:
+        dedup_key = f"{SYSTEM_ALERT_DEDUP_PREFIX}{a.name}"
+        try:
+            fresh = await redis_client.set(
+                dedup_key, "1", nx=True, ex=SYSTEM_ALERT_DEDUP_TTL,
+            )
+        except Exception:
+            fresh = True
+        if not fresh:
+            logger.debug("System alert %s suppressed (recently alerted)", a.name)
+            continue
+
+        logger.warning("System alert [%s/%s]: %s", a.severity, a.name, a.message)
+        await _record_alert(
+            db_pool, f"system_{a.name}", a.severity, a.name,
+            f"{a.severity.upper()}: {a.message}\nTime: {_now_str()}",
+        )
+        if notifier.is_configured:
+            await notifier.send_alert(
+                f"{'CRITICAL' if a.severity == 'critical' else 'WARNING'}: "
+                f"ShareSentinel {a.name}\n\n{a.message}\nTime: {_now_str()}"
+            )
+
+
 async def check_and_remediate(
     redis_client: aioredis.Redis,
     db_pool: asyncpg.Pool,
@@ -157,6 +194,11 @@ async def check_and_remediate(
     remediator: ContainerRemediator,
 ) -> None:
     """Run one check cycle: inspect all loops, alert and remediate as needed."""
+    try:
+        await check_system_and_alert(redis_client, db_pool, config, notifier)
+    except Exception:
+        logger.exception("System-level health sweep failed")
+
     results = await check_all_loops(redis_client, db_pool, config)
 
     if not results:

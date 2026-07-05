@@ -19,12 +19,34 @@ import redis.asyncio as aioredis
 
 from .config import LifecycleConfig
 from .graph_api import GRAPH_BETA, DEFAULT_TIMEOUT, GraphAuth
+from .provisioning_enforcer import (
+    PROVISIONING_OPERATIONS,
+    PROVISIONING_QUERY_OPERATIONS,
+    PROVISIONING_QUERY_RECORD_TYPES,
+    ProvisioningEnforcer,
+)
 
 logger = logging.getLogger(__name__)
 
 QUEUE_KEY = "sharesentinel:jobs"
 DEDUP_KEY_PREFIX = "sharesentinel:dedup:"
-DEDUP_TTL_SECONDS = 86400  # 24 hours
+# Must comfortably exceed the reconciliation look-back window, or re-read
+# records would be re-enqueued as new events.
+DEDUP_TTL_SECONDS = 3 * 86400  # 72 hours
+
+# Reconciliation pass: unified audit log records routinely become queryable
+# 30 minutes to several hours AFTER the activity they describe. The normal
+# incremental poll (5-min overlap) permanently misses those, so every
+# ``reconcile_interval`` we re-query the trailing ``lookback`` window and rely
+# on dedup to drop the already-seen majority.
+RECON_LAST_KEY = "sharesentinel:audit_recon_last"
+
+# In-flight query tracking. Graph audit queries can run longer than our wait
+# timeout during API slowdowns; instead of abandoning a slow query and
+# re-creating an identical one every cycle (which never converges), remember
+# the query id per time window and resume waiting on it next cycle.
+INFLIGHT_QUERY_KEY_PREFIX = "sharesentinel:audit_query_inflight:"
+INFLIGHT_QUERY_TTL_S = 86400  # Graph retains queries long enough; 24h is ample
 
 # Audit query polling
 QUERY_POLL_INTERVAL_S = 10
@@ -46,9 +68,19 @@ class AuditLogPoller:
         self._auth = auth
         self._redis = redis_client
         self._db = db_pool
+        self._config = config
         self._operations = [
             op.strip() for op in config.audit_poll_operations.split(",") if op.strip()
         ]
+        self._provisioning: ProvisioningEnforcer | None = None
+        if config.audit_poll_provisioning_enabled:
+            self._provisioning = ProvisioningEnforcer(
+                auth, redis_client, db_pool, config
+            )
+            logger.info(
+                "Provisioning event ingestion enabled (operations: %s)",
+                ", ".join(PROVISIONING_QUERY_OPERATIONS),
+            )
 
     async def poll(self) -> dict:
         """Run one poll cycle: query audit logs since last run, push new events to Redis.
@@ -56,6 +88,11 @@ class AuditLogPoller:
         If the time window since the last successful poll exceeds
         MAX_QUERY_WINDOW_MINUTES, the window is broken into smaller chunks
         to avoid Graph API query timeouts on large ranges.
+
+        After the incremental window, a reconciliation pass re-queries the
+        trailing look-back window every ``audit_poll_reconcile_interval_hours``
+        to catch records that surfaced in the audit log late (dedup drops the
+        already-seen ones). Reconciliation failures never fail the poll cycle.
         """
         start_time = await self._get_last_poll_time()
         end_time = datetime.now(timezone.utc)
@@ -67,14 +104,68 @@ class AuditLogPoller:
                 total_gap.total_seconds() / 3600,
                 MAX_QUERY_WINDOW_MINUTES,
             )
-            return await self._poll_chunked(start_time, end_time)
+            stats = await self._poll_chunked(start_time, end_time, save_state=True)
+        else:
+            stats = await self._poll_window(start_time, end_time, save_state=True)
 
-        return await self._poll_window(start_time, end_time, save_state=True)
+        try:
+            recon = await self._maybe_reconcile(end_time)
+            if recon:
+                stats["recon_total"] = recon["total"]
+                stats["recon_new"] = recon["new"]
+        except Exception:
+            logger.exception("Reconciliation pass failed (incremental poll unaffected)")
 
-    async def _poll_chunked(self, start_time: datetime, final_end: datetime) -> dict:
+        return stats
+
+    async def _maybe_reconcile(self, now: datetime) -> dict | None:
+        """Re-query the trailing look-back window if the interval has elapsed."""
+        lookback_h = self._config.audit_poll_lookback_hours
+        interval_h = self._config.audit_poll_reconcile_interval_hours
+        if lookback_h <= 0 or interval_h <= 0:
+            return None
+        # Look-back must stay inside the dedup TTL or re-read records would
+        # re-enqueue as new events.
+        max_lookback_h = DEDUP_TTL_SECONDS // 3600 - 12
+        if lookback_h > max_lookback_h:
+            logger.warning(
+                "audit_poll_lookback_hours=%d exceeds safe maximum %d; clamping",
+                lookback_h, max_lookback_h,
+            )
+            lookback_h = max_lookback_h
+
+        try:
+            raw = await self._redis.get(RECON_LAST_KEY)
+            last_recon = float(raw) if raw else 0.0
+        except Exception:
+            last_recon = 0.0
+        if now.timestamp() - last_recon < interval_h * 3600:
+            return None
+
+        start = now - timedelta(hours=lookback_h)
+        logger.info(
+            "Reconciliation pass: re-querying %s -> %s for late-arriving records",
+            start.isoformat(), now.isoformat(),
+        )
+        stats = await self._poll_chunked(start, now, save_state=False)
+        if stats["new"]:
+            logger.warning(
+                "Reconciliation found %d late-arriving event(s) the incremental "
+                "poll had missed", stats["new"],
+            )
+        try:
+            await self._redis.set(RECON_LAST_KEY, str(now.timestamp()))
+        except Exception:
+            logger.warning("Failed to persist reconciliation timestamp", exc_info=True)
+        return stats
+
+    async def _poll_chunked(
+        self, start_time: datetime, final_end: datetime, *, save_state: bool
+    ) -> dict:
         """Process a large time gap in sequential chunks."""
         total_records = 0
         total_new = 0
+        total_provisioning = 0
         chunk_start = start_time
 
         while chunk_start < final_end:
@@ -87,9 +178,10 @@ class AuditLogPoller:
                 chunk_start.isoformat(),
                 chunk_end.isoformat(),
             )
-            stats = await self._poll_window(chunk_start, chunk_end, save_state=True)
+            stats = await self._poll_window(chunk_start, chunk_end, save_state=save_state)
             total_records += stats["total"]
             total_new += stats["new"]
+            total_provisioning += stats.get("provisioning", 0)
             # Advance to next chunk (the saved poll time is chunk_end)
             chunk_start = chunk_end
 
@@ -97,7 +189,11 @@ class AuditLogPoller:
             "Chunked poll complete: %d total records, %d new jobs across all chunks",
             total_records, total_new,
         )
-        return {"total": total_records, "new": total_new}
+        return {
+            "total": total_records,
+            "new": total_new,
+            "provisioning": total_provisioning,
+        }
 
     async def _poll_window(
         self, start_time: datetime, end_time: datetime, *, save_state: bool
@@ -112,23 +208,123 @@ class AuditLogPoller:
             end_time.isoformat(),
         )
 
-        query_id = await self._create_audit_query(query_start, end_time)
+        inflight_key = (
+            f"{INFLIGHT_QUERY_KEY_PREFIX}"
+            f"{query_start.isoformat()}|{end_time.isoformat()}"
+        )
+        query_id = await self._get_or_create_query(
+            inflight_key, query_start, end_time
+        )
         await self._wait_for_query_completion(query_id)
         records = await self._fetch_all_records(query_id)
+        # Window fully processed — drop the in-flight marker.
+        try:
+            await self._redis.delete(inflight_key)
+        except Exception:
+            logger.debug("Failed to clear in-flight query key", exc_info=True)
 
         new_count = 0
+        provisioning_count = 0
         for record in records:
             job = self._transform_to_queue_job(record)
-            if not await self._is_duplicate(job):
-                await self._push_to_queue(job)
-                new_count += 1
+            if await self._is_seen(job):
+                continue
+            operation = (record.get("operation") or "").strip().lower()
+            if self._provisioning is not None and operation in PROVISIONING_OPERATIONS:
+                # Creation events are policy triggers, not file-analysis jobs:
+                # route them to the provisioning enforcer instead of the worker.
+                await self._provisioning.handle_record(record, job)
+                await self._mark_seen(job)
+                provisioning_count += 1
+                continue
+            # Push BEFORE marking seen: a crash between the two re-delivers
+            # the event next cycle (worker create_event dedups on conflict),
+            # whereas mark-then-push would silently lose it for the dedup TTL.
+            await self._push_to_queue(job)
+            await self._mark_seen(job)
+            new_count += 1
 
         if save_state:
-            await self._save_last_poll_time(end_time, new_count)
-        logger.info("Audit poll complete: %d records, %d new jobs enqueued", len(records), new_count)
-        return {"total": len(records), "new": new_count}
+            await self._save_last_poll_time(end_time, new_count + provisioning_count)
+        logger.info(
+            "Audit poll complete: %d records, %d new jobs enqueued, "
+            "%d provisioning events handled",
+            len(records), new_count, provisioning_count,
+        )
+        return {
+            "total": len(records),
+            "new": new_count,
+            "provisioning": provisioning_count,
+        }
 
     # -- Audit Query API --------------------------------------------------------
+
+    async def _get_or_create_query(
+        self, inflight_key: str, query_start: datetime, end_time: datetime
+    ) -> str:
+        """Reuse a still-viable in-flight query for this window, else create one.
+
+        A query that timed out our wait in a previous cycle usually keeps
+        running server-side; resuming it lets slow cycles converge instead of
+        restarting Graph's work from zero every 15 minutes.
+        """
+        existing: str | None = None
+        try:
+            raw = await self._redis.get(inflight_key)
+            if raw:
+                existing = raw.decode() if isinstance(raw, bytes) else str(raw)
+        except Exception:
+            logger.debug("Failed to read in-flight query key", exc_info=True)
+
+        if existing:
+            status = await self._get_query_status(existing)
+            if status in ("succeeded", "running", "notStarted"):
+                logger.info(
+                    "Resuming in-flight audit query %s (status=%s)",
+                    existing, status,
+                )
+                return existing
+            logger.info(
+                "Stored audit query %s not reusable (status=%s) — creating new",
+                existing, status,
+            )
+
+        query_id = await self._create_audit_query(query_start, end_time)
+        try:
+            await self._redis.set(inflight_key, query_id, ex=INFLIGHT_QUERY_TTL_S)
+        except Exception:
+            logger.debug("Failed to store in-flight query key", exc_info=True)
+        return query_id
+
+    async def _get_query_status(self, query_id: str) -> str:
+        """Fetch a query's status; 'missing' on 404, 'unknown' on any error."""
+        url = f"{GRAPH_BETA}/security/auditLog/queries/{query_id}"
+        headers = {"Authorization": f"Bearer {self._auth.get_access_token()}"}
+        try:
+            async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+                resp = await client.get(url, headers=headers)
+            if resp.status_code == 404:
+                return "missing"
+            resp.raise_for_status()
+            return resp.json().get("status", "unknown")
+        except Exception:
+            logger.debug("Status check failed for query %s", query_id, exc_info=True)
+            return "unknown"
+
+    def _query_filters(self) -> tuple[list[str], list[str]]:
+        """Build (operationFilters, recordTypeFilters) for the audit query.
+
+        With provisioning ingestion enabled, the single query also matches
+        site/group/user creation events. Operation and record-type filters are
+        ANDed by the API, but each operation only exists under one record
+        type, so the combined filter never produces false matches.
+        """
+        operations = list(self._operations)
+        record_types = ["sharePointSharingOperation"]
+        if self._provisioning is not None:
+            operations += PROVISIONING_QUERY_OPERATIONS
+            record_types += PROVISIONING_QUERY_RECORD_TYPES
+        return operations, record_types
 
     async def _create_audit_query(
         self, start: datetime, end: datetime
@@ -139,16 +335,37 @@ class AuditLogPoller:
             "Authorization": f"Bearer {self._auth.get_access_token()}",
             "Content-Type": "application/json",
         }
+        operations, record_types = self._query_filters()
         body = {
             "displayName": f"ShareSentinel poll {end.isoformat()}",
             "filterStartDateTime": start.isoformat(),
             "filterEndDateTime": end.isoformat(),
-            "operationFilters": self._operations,
-            "recordTypeFilters": ["sharePointSharingOperation"],
+            "operationFilters": operations,
+            "recordTypeFilters": record_types,
         }
 
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=body)
+            if (
+                resp.status_code in (400, 403)
+                and self._provisioning is not None
+            ):
+                # Most likely cause: the app registration holds only the
+                # SharePoint-scoped audit permission, which cannot query
+                # azureActiveDirectory records. Fall back to the sharing-only
+                # query so link-event ingestion keeps working, and surface
+                # the configuration problem loudly.
+                logger.error(
+                    "Audit query with provisioning filters rejected "
+                    "(HTTP %d: %s). Falling back to sharing-only filters for "
+                    "this cycle. Grant the app AuditLogsQuery.Read.All (the "
+                    "SharePoint-scoped variant is insufficient) or set "
+                    "AUDIT_POLL_PROVISIONING_ENABLED=false.",
+                    resp.status_code, resp.text[:300],
+                )
+                body["operationFilters"] = list(self._operations)
+                body["recordTypeFilters"] = ["sharePointSharingOperation"]
+                resp = await client.post(url, headers=headers, json=body)
             resp.raise_for_status()
             data = resp.json()
 
@@ -290,14 +507,19 @@ class AuditLogPoller:
             "_original_size": len(serialized.encode("utf-8")),
         }
 
-    async def _is_duplicate(self, job: dict) -> bool:
-        """Check Redis dedup key (same logic as webhook-listener)."""
+    async def _is_seen(self, job: dict) -> bool:
+        """Check the dedup key WITHOUT claiming it — the claim happens in
+        _mark_seen() only after the event was durably enqueued/handled."""
         key = f"{DEDUP_KEY_PREFIX}{job['event_id']}"
-        was_set = await self._redis.set(key, "1", ex=DEDUP_TTL_SECONDS, nx=True)
-        if was_set:
-            return False
-        logger.debug("Duplicate event skipped: %s", job["event_id"][:12])
-        return True
+        exists = await self._redis.exists(key)
+        if exists:
+            logger.debug("Duplicate event skipped: %s", job["event_id"][:12])
+            return True
+        return False
+
+    async def _mark_seen(self, job: dict) -> None:
+        key = f"{DEDUP_KEY_PREFIX}{job['event_id']}"
+        await self._redis.set(key, "1", ex=DEDUP_TTL_SECONDS)
 
     async def _push_to_queue(self, job: dict) -> None:
         """RPUSH job JSON to the worker queue."""

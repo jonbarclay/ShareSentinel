@@ -23,6 +23,11 @@ class OpenAIProvider(BaseAIProvider):
         "gpt-4o": {"input": 2.50, "output": 10.00},
         "gpt-4o-mini": {"input": 0.15, "output": 0.60},
         "gpt-5-nano": {"input": 0.10, "output": 0.40},
+        # GPT-5 family. Verify against current OpenAI pricing before relying on
+        # the cost totals; unlisted models fall through to a $0 estimate.
+        "gpt-5": {"input": 1.25, "output": 10.00},
+        "gpt-5-mini": {"input": 0.25, "output": 2.00},
+        "gpt-5.4": {"input": 1.25, "output": 10.00},
     }
 
     def __init__(
@@ -31,11 +36,17 @@ class OpenAIProvider(BaseAIProvider):
         model: str = "gpt-4o",
         prompt_manager: PromptManager | None = None,
         temperature: float = 0,
+        reasoning_effort: str | None = None,
     ) -> None:
         self.client = openai.AsyncOpenAI(api_key=api_key)
         self.model = model
         self.prompt_manager = prompt_manager or PromptManager()
         self.temperature = temperature
+        self.reasoning_effort = reasoning_effort
+
+    def _is_gpt5_family(self) -> bool:
+        """GPT-5 reasoning models reject `temperature` and accept `reasoning_effort`."""
+        return self.model.startswith("gpt-5")
 
     # ------------------------------------------------------------------
     # BaseAIProvider interface
@@ -51,7 +62,12 @@ class OpenAIProvider(BaseAIProvider):
                 messages=messages,
                 response_format={"type": "json_object"},
             )
-            if self.temperature:
+            if self._is_gpt5_family():
+                # GPT-5 reasoning models 400 on `temperature`; pass reasoning
+                # effort instead (when configured).
+                if self.reasoning_effort:
+                    kwargs["reasoning_effort"] = self.reasoning_effort
+            elif self.temperature:
                 kwargs["temperature"] = self.temperature
 
             response = await self.client.chat.completions.create(**kwargs)
@@ -103,6 +119,11 @@ class OpenAIProvider(BaseAIProvider):
                 processing_time_seconds=time.time() - start_time,
                 success=False, error=str(exc),
             )
+        except TransientAIError:
+            # e.g. parse_ai_response on unparseable output — let
+            # retry_with_backoff re-run the analysis rather than converting
+            # to a success=False response.
+            raise
         except Exception as exc:
             logger.exception("OpenAI analysis failed")
             return AnalysisResponse(

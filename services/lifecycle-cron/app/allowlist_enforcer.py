@@ -1,21 +1,27 @@
-"""Allowlist enforcement — ensures only allow-listed SharePoint sites permit anonymous sharing.
+"""Allowlist enforcement helpers — per-site sharing capability management.
 
-Uses the Office365-REST-Python-Client library for SharePoint admin CSOM operations,
+Site inventory comes from PnP PowerShell (scripts/Get-SitePolicyInventory.ps1)
+because Get-PnPTenantSite pages correctly at tenant scale; the raw CSOM
+getSitePropertiesFromSharePointByFilters REST call returns only the first
+~1,400 rows with no continuation cursor (verified 2026-07-05: 1,423 of ~235K
+sites), which silently exempted the rest of the tenant from the sharing policy.
+
+Per-site reads/writes still use the Office365-REST-Python-Client CSOM API,
 since the Graph API does not support per-site sharingCapability management.
 All synchronous SPO library calls are wrapped in asyncio.to_thread() for async compat.
 """
 
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
 import re
-from datetime import datetime, timezone
-from typing import Optional, Set
-
-import asyncpg
+import time
+from dataclasses import dataclass
+from pathlib import Path
 
 from .config import LifecycleConfig
+from .pwsh import run_pwsh_script
 
 logger = logging.getLogger(__name__)
 
@@ -88,36 +94,222 @@ def _create_spo_admin_context(config: LifecycleConfig):
     return ctx
 
 
-def _get_all_site_properties_sync(ctx) -> list:
-    """Fetch all site collections from the SharePoint tenant admin API.
+@dataclass
+class SiteRecord:
+    """One site from the tenant inventory (PnP enumeration)."""
 
-    Returns a list of SiteProperties objects.
+    url: str
+    title: str
+    sharing_capability: int  # SHARING_CAPABILITY_MAP value, or -1 if unknown
+
+
+async def get_site_inventory(
+    config: LifecycleConfig,
+    *,
+    include_onedrive: bool = False,
+    onedrive_only: bool = False,
+    log_prefix: str = "site-inventory",
+) -> list[SiteRecord]:
+    """Enumerate tenant site collections via scripts/Get-SitePolicyInventory.ps1.
+
+    Raises RuntimeError if the script fails or produces no output — callers must
+    treat that as a failed scan, never as an empty (compliant) tenant.
+    """
+    out_path = Path(f"/tmp/site_inventory_{onedrive_only}_{include_onedrive}_{int(time.time())}.jsonl")
+    try:
+        rc, _stdout, stderr = await run_pwsh_script(
+            "Get-SitePolicyInventory.ps1",
+            [
+                "-OutFile", str(out_path),
+                "-IncludeOneDrive", "1" if include_onedrive else "0",
+                "-OneDriveOnly", "1" if onedrive_only else "0",
+            ],
+            log_prefix,
+        )
+        if rc != 0:
+            raise RuntimeError(
+                f"Site inventory script failed rc={rc}: {stderr[-300:] if stderr else 'no stderr'}"
+            )
+        if not out_path.exists():
+            raise RuntimeError("Site inventory script produced no output file")
+
+        records: list[SiteRecord] = []
+        unknown_capability = 0
+        with out_path.open(encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.warning("Skipping malformed inventory line: %r", line[:120])
+                    continue
+                cap_name = str(row.get("sharing_capability") or "")
+                cap = SHARING_CAPABILITY_MAP.get(cap_name, -1)
+                if cap == -1:
+                    unknown_capability += 1
+                records.append(
+                    SiteRecord(
+                        url=str(row.get("url") or ""),
+                        title=str(row.get("title") or ""),
+                        sharing_capability=cap,
+                    )
+                )
+        if not records:
+            raise RuntimeError("Site inventory is empty — refusing to treat as compliant tenant")
+        if unknown_capability:
+            logger.info(
+                "Site inventory: %d/%d sites need per-site capability resolution",
+                unknown_capability, len(records),
+            )
+        return records
+    finally:
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove inventory temp file %s", out_path)
+
+
+def _is_throttle_error(e: Exception) -> bool:
+    msg = str(e)
+    return "429" in msg or "throttl" in msg.lower() or "IdleSession" in msg
+
+
+def _encode_csom_url(site_url: str) -> str:
+    """Escape characters that break the tenant-admin OData filter.
+
+    ``get_site_properties_by_url`` interpolates the URL into a ``$filter=``
+    query string without encoding; a literal ``&`` in the site URL (e.g.
+    /sites/DEPT-BusinessIntelligence&ResearchServices) terminates the query
+    parameter and the server rejects the truncated expression. Percent-encode
+    the characters the library leaves raw; the server decodes them back before
+    comparing against the aggregated site list.
+    """
+    return site_url.replace("%", "%25").replace("&", "%26").replace("#", "%23").replace("+", "%2B")
+
+
+def _clear_pending(ctx) -> None:
+    """Drop any queued-but-unexecuted CSOM queries from the context.
+
+    A failed execute_query can leave its query (with unresolved identity
+    placeholders) on the context's pending queue; the NEXT call on the same
+    context then fails with a bogus request like ``items(<key>)`` → 401.
+    Observed live 2026-07-05: one bad site poisoned the following site's
+    remediation. Always clear after a failure.
+    """
+    try:
+        ctx.clear()
+    except Exception:
+        logger.debug("ctx.clear() failed", exc_info=True)
+
+
+def _with_csom_retry(fn, ctx, *args, max_attempts: int = 3):
+    """Run a synchronous CSOM call with exponential backoff on throttling.
+
+    The PowerShell scripts back off on 429/throttle/IdleSession; the Python
+    CSOM path previously had no retry, so a throttled call silently skipped
+    the site. Mirrors that behavior here (15s, 30s waits). Clears the
+    context's pending-query queue after any failure so one bad site can't
+    poison the next call on the shared context.
+    """
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn(ctx, *args)
+        except Exception as e:
+            _clear_pending(ctx)
+            if attempt < max_attempts and _is_throttle_error(e):
+                wait = min(180, 15 * (2 ** (attempt - 1)))
+                logger.warning(
+                    "CSOM throttled (attempt %d/%d), sleeping %ds: %s",
+                    attempt, max_attempts, wait, str(e)[:120],
+                )
+                time.sleep(wait)
+                continue
+            raise
+
+
+def _get_sharing_capability_by_url_sync(ctx, site_url: str) -> int:
+    """Resolve a single site's SharingCapability with a per-site admin call.
+
+    Bulk tenant enumeration can return uninitialized values for some site
+    properties (same class of problem as DisableCompanyWideSharingLinks,
+    which is *always* Unknown in bulk results); a per-site
+    ``get_site_properties_by_url`` read returns the authoritative value.
+    Retries on throttling.
     """
     from office365.sharepoint.tenant.administration.tenant import Tenant
 
-    tenant = Tenant(ctx)
-    sites = tenant.get_site_properties_from_sharepoint_by_filters("", "0", True)
-    ctx.execute_query()
+    def _read(ctx_, url_):
+        tenant = Tenant(ctx_)
+        site_props = tenant.get_site_properties_by_url(_encode_csom_url(url_), True)
+        ctx_.execute_query()
+        return site_props.sharing_capability
 
-    return list(sites)
+    return _with_csom_retry(_read, ctx, site_url)
 
 
-def _get_sharing_capability_sync(site_props) -> int:
-    """Extract the SharingCapability value from a SiteProperties object."""
-    return site_props.sharing_capability
+def _is_unsupported_site_type(site_url: str) -> bool:
+    """Return True for site classes that can't be managed via the tenant
+    admin sharing APIs (mirrors the worker's cws_drift_detector logic).
+
+    * /contentstorage/* — SharePoint Embedded containers (Loop, Whiteboard,
+      Designer, Teams private channels).
+    * *-public.sharepoint.com — legacy SharePoint Online Public Website.
+    * /sites/contenttypehub — Content Type Hub system site.
+    * /portals/* — PointPublishing site collections ("is a PointPublishing
+      site collection. The only valid parameters...").
+    * MySite host root — "The property DisableCompanyWideSharingLinks cannot
+      be set on the MySite host." (Personal sites UNDER it are fine.)
+    """
+    if not site_url:
+        return True
+    lower = site_url.lower().rstrip("/")
+    if "/contentstorage/" in lower:
+        return True
+    if "/portals/" in lower:
+        return True
+    if lower.endswith("/sites/contenttypehub"):
+        return True
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(lower)
+        host = parsed.netloc
+        path = parsed.path.rstrip("/")
+    except Exception:
+        return False
+    if host.endswith("-public.sharepoint.com"):
+        return True
+    return host.endswith("-my.sharepoint.com") and not path
 
 
 def _set_sharing_capability_sync(ctx, site_url: str, capability_value: int) -> None:
-    """Update a site's sharing capability via the SharePoint tenant admin API."""
+    """Update a site's sharing capability via the SharePoint tenant admin API.
+
+    Retries on throttling so a 429 doesn't silently skip enforcement.
+    """
+    from office365.runtime.paths.v3.entity import EntityPath
     from office365.sharepoint.tenant.administration.tenant import Tenant
 
-    tenant = Tenant(ctx)
-    site_props = tenant.get_site_properties_by_url(site_url, True)
-    ctx.execute_query()
+    def _write(ctx_, url_, value_):
+        tenant = Tenant(ctx_)
+        site_props = tenant.get_site_properties_by_url(_encode_csom_url(url_), True)
+        ctx_.execute_query()
+        # Pin the entity path to the SiteId so update() addresses the admin
+        # list item directly. Without this, update() re-resolves the site BY
+        # URL through another $filter round trip, which the server rejects for
+        # URLs containing '&' (e.g. /sites/DEPT-BusinessIntelligence&Research
+        # Services) — the read works, the write blew up.
+        site_id = site_props.properties.get("SiteId")
+        if site_id:
+            site_props._resource_path = EntityPath(
+                site_id, site_props.parent_collection.resource_path
+            )
+        site_props.sharing_capability = value_
+        site_props.update()
+        ctx_.execute_query()
 
-    site_props.sharing_capability = capability_value
-    site_props.update()
-    ctx.execute_query()
+    _with_csom_retry(_write, ctx, site_url, capability_value)
 
 
 # SharingCapability enum values used by SharePoint CSOM
@@ -136,187 +328,50 @@ def _capability_allows_anonymous(capability_value: int) -> bool:
     return capability_value == SHARING_CAPABILITY_MAP["ExternalUserAndGuestSharing"]
 
 
-async def run_enforcement(
-    db_pool: asyncpg.Pool,
-    config: LifecycleConfig,
-    sync_id: int,
-    full_enforcement: bool = True,
-) -> dict:
-    """Execute one enforcement pass.
+# CompanyWideSharingLinksPolicy enum values
+# (used by SiteProperties.DisableCompanyWideSharingLinks — the "Anyone in your
+# organization" sharing option toggle).
+COMPANY_WIDE_SHARING_MAP = {
+    "NotDisabled": 0,
+    "Disabled": 1,
+    "NotSpecified": 2,
+}
+COMPANY_WIDE_SHARING_REVERSE = {v: k for k, v in COMPANY_WIDE_SHARING_MAP.items()}
+COMPANY_WIDE_SHARING_PROPERTY = "DisableCompanyWideSharingLinks"
 
-    full_enforcement=True  (weekly cron): disable on non-allow-listed + enable on allow-listed
-    full_enforcement=False (manual Sync Now): only enable on allow-listed sites
+
+def _get_company_wide_sharing_sync(site_props) -> int:
+    """Extract DisableCompanyWideSharingLinks value from a SiteProperties object.
+
+    The Office365-REST-Python-Client library doesn't declare this property on
+    SiteProperties, so we read it from the dynamic properties dict.  Sites that
+    were never configured return NotSpecified (2), which behaves like NotDisabled.
     """
-    stats = {
-        "total_sites_checked": 0,
-        "sites_disabled": 0,
-        "sites_enabled": 0,
-        "sites_already_correct": 0,
-        "sites_failed": 0,
-    }
+    return site_props.properties.get(COMPANY_WIDE_SHARING_PROPERTY, COMPANY_WIDE_SHARING_MAP["NotSpecified"])
 
-    enabled_capability = SHARING_CAPABILITY_MAP.get(
-        config.allowlist_enabled_capability,
-        SHARING_CAPABILITY_MAP["ExternalUserAndGuestSharing"],
-    )
-    disabled_capability = SHARING_CAPABILITY_MAP.get(
-        config.allowlist_disabled_capability,
-        SHARING_CAPABILITY_MAP["ExternalUserSharingOnly"],
-    )
 
-    try:
-        # Claim sync row
-        async with db_pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE site_allowlist_syncs
-                SET status = 'in_progress', started_at = $1
-                WHERE id = $2
-                """,
-                datetime.now(timezone.utc),
-                sync_id,
-            )
+def _set_company_wide_sharing_sync(ctx, site_url: str, value: int) -> None:
+    """Update DisableCompanyWideSharingLinks on a single site via the tenant admin API."""
+    from office365.sharepoint.tenant.administration.tenant import Tenant
 
-        # Load allow list
-        async with db_pool.acquire() as conn:
-            rows = await conn.fetch("SELECT site_url FROM site_allowlist")
-        allowed_urls: Set[str] = {
-            r["site_url"].rstrip("/").lower() for r in rows
-        }
+    tenant = Tenant(ctx)
+    site_props = tenant.get_site_properties_by_url(_encode_csom_url(site_url), True)
+    ctx.execute_query()
 
-        logger.info(
-            "Enforcement starting (sync_id=%d, full=%s, allowed_sites=%d)",
-            sync_id, full_enforcement, len(allowed_urls),
-        )
+    site_props.set_property(COMPANY_WIDE_SHARING_PROPERTY, value)
+    site_props.update()
+    ctx.execute_query()
 
-        # Create SPO admin context and fetch all sites (synchronous, wrapped)
-        ctx = await asyncio.to_thread(_create_spo_admin_context, config)
-        all_sites = await asyncio.to_thread(_get_all_site_properties_sync, ctx)
 
-        stats["total_sites_checked"] = len(all_sites)
+def _company_wide_sharing_allowed(value: int) -> bool:
+    """Return True if the current value allows company-wide (anyone-in-org) links."""
+    # Only Disabled (1) actually blocks the option. NotSpecified behaves as allowed.
+    return value != COMPANY_WIDE_SHARING_MAP["Disabled"]
 
-        for site_props in all_sites:
-            site_url = str(site_props.url).rstrip("/").lower() if site_props.url else ""
-            site_display_name = str(site_props.title) if hasattr(site_props, "title") else ""
-            current_capability = _get_sharing_capability_sync(site_props)
-            current_capability_name = SHARING_CAPABILITY_REVERSE.get(
-                current_capability, str(current_capability)
-            )
 
-            is_allowed = site_url in allowed_urls
-            action = "no_change"
-            desired_capability_name = current_capability_name
-            error_msg: Optional[str] = None
-
-            try:
-                if is_allowed and current_capability != enabled_capability:
-                    # Enable anonymous sharing on allow-listed site
-                    desired_capability_name = SHARING_CAPABILITY_REVERSE.get(
-                        enabled_capability, str(enabled_capability)
-                    )
-                    await asyncio.to_thread(
-                        _set_sharing_capability_sync, ctx, site_url, enabled_capability
-                    )
-                    action = "enabled"
-                    stats["sites_enabled"] += 1
-                    logger.info("Enabled anonymous sharing: %s", site_url)
-
-                elif (
-                    not is_allowed
-                    and full_enforcement
-                    and _capability_allows_anonymous(current_capability)
-                ):
-                    # Disable anonymous sharing on non-allow-listed site
-                    desired_capability_name = SHARING_CAPABILITY_REVERSE.get(
-                        disabled_capability, str(disabled_capability)
-                    )
-                    await asyncio.to_thread(
-                        _set_sharing_capability_sync, ctx, site_url, disabled_capability
-                    )
-                    action = "disabled"
-                    stats["sites_disabled"] += 1
-                    logger.info("Disabled anonymous sharing: %s", site_url)
-
-                else:
-                    stats["sites_already_correct"] += 1
-
-            except Exception as e:
-                action = "failed"
-                error_msg = _sanitize_error(e)
-                stats["sites_failed"] += 1
-                logger.error("Failed to update %s: %s", site_url, e)
-
-            # Record per-site detail
-            async with db_pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO site_allowlist_sync_details
-                        (sync_id, site_id, site_url, site_display_name,
-                         previous_capability, desired_capability, action_taken, error_message)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                    """,
-                    sync_id,
-                    site_url,
-                    site_url,
-                    site_display_name,
-                    current_capability_name,
-                    desired_capability_name,
-                    action,
-                    error_msg,
-                )
-
-            # Rate limit between PATCH calls
-            if action in ("enabled", "disabled"):
-                await asyncio.sleep(0.2)
-
-        # Mark sync as completed
-        async with db_pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE site_allowlist_syncs
-                SET status = 'completed',
-                    completed_at = $1,
-                    total_sites_checked = $2,
-                    sites_disabled = $3,
-                    sites_enabled = $4,
-                    sites_already_correct = $5,
-                    sites_failed = $6
-                WHERE id = $7
-                """,
-                datetime.now(timezone.utc),
-                stats["total_sites_checked"],
-                stats["sites_disabled"],
-                stats["sites_enabled"],
-                stats["sites_already_correct"],
-                stats["sites_failed"],
-                sync_id,
-            )
-
-    except Exception as e:
-        logger.exception("Enforcement run failed (sync_id=%d)", sync_id)
-        async with db_pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE site_allowlist_syncs
-                SET status = 'failed',
-                    completed_at = $1,
-                    error_message = $2,
-                    total_sites_checked = $3,
-                    sites_disabled = $4,
-                    sites_enabled = $5,
-                    sites_already_correct = $6,
-                    sites_failed = $7
-                WHERE id = $8
-                """,
-                datetime.now(timezone.utc),
-                _sanitize_error(e),
-                stats["total_sites_checked"],
-                stats["sites_disabled"],
-                stats["sites_enabled"],
-                stats["sites_already_correct"],
-                stats["sites_failed"],
-                sync_id,
-            )
-
-    logger.info("Enforcement complete (sync_id=%d): %s", sync_id, stats)
-    return stats
+# NOTE: the legacy run_enforcement() pass (site_allowlist_syncs writer) was
+# removed 2026-07-05. It had no callers, enumerated only the first CSOM page,
+# skipped OneDrive, lacked the unsupported-site filter, and treated
+# uninitialized SharingCapability values as compliant. The dashboard still
+# reads site_allowlist_syncs history for display; run_site_policy_scan is the
+# enforcement path.

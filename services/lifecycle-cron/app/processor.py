@@ -46,7 +46,20 @@ async def process_lifecycle_milestones(
 
     stats = {"notifications_sent": 0, "links_removed": 0, "errors": 0}
 
+    if not config.lifecycle_notifications_enabled:
+        logger.info(
+            "Lifecycle owner notifications disabled "
+            "(LIFECYCLE_NOTIFICATIONS_ENABLED=false); countdown emails suppressed, "
+            "links still removed at %dd", config.max_days,
+        )
+
     for days, column, days_remaining in MILESTONES:
+        # Countdown milestones exist only to send owner emails; skip them when
+        # notifications are disabled. The removal milestone still runs so links
+        # are removed on schedule (its confirmation email is gated separately).
+        if not config.lifecycle_notifications_enabled and days < config.max_days:
+            continue
+
         rows = await _fetch_due_rows(db_pool, days, column)
         if not rows:
             continue
@@ -207,7 +220,7 @@ async def _process_removal(
 
     # Send removal notification
     user_email = row.get("mail")
-    if user_email:
+    if user_email and config.lifecycle_notifications_enabled:
         removal_date = _compute_removal_date(row["link_created_at"], config.max_days)
         await notifier.send_countdown_email(
             to_address=user_email,

@@ -88,3 +88,38 @@ def extract_all_sharing_links(
             "expiration_date": expiration,
         })
     return results
+
+
+def has_active_sharing_links(
+    sharing_links: Optional[List[Dict[str, Any]]],
+) -> bool:
+    """Return True if at least one sharing link is present and not expired.
+
+    A link is considered active if it exists in the list (meaning the
+    Graph API still reports it) AND either has no ``expiration_date`` or
+    the ``expiration_date`` is in the future.
+
+    Returns ``True`` (fail-open) when *sharing_links* is ``None`` — this
+    means the sharing state could not be determined (e.g. permissions
+    fetch failed), so processing should NOT be skipped.
+    """
+    if sharing_links is None:
+        return True  # fail-open: unknown state, assume active
+
+    if not sharing_links:
+        return False  # empty list: all links have been removed
+
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    for link in sharing_links:
+        expiration = link.get("expiration_date")
+        if expiration is None:
+            return True  # no expiration = active
+        try:
+            exp_dt = datetime.fromisoformat(str(expiration).replace("Z", "+00:00"))
+            if exp_dt > now:
+                return True  # expiration in the future = active
+        except (ValueError, TypeError):
+            return True  # unparseable expiration = fail-open
+    return False  # all links expired

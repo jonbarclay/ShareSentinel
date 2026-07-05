@@ -123,6 +123,20 @@ class UserNotifier:
     # Public API
     # ------------------------------------------------------------------
 
+    def _bcc_addresses(self) -> List[str]:
+        """Parse the configured BCC string into a list of addresses.
+
+        Supports a comma- or semicolon-separated list so multiple recipients
+        (e.g. security admin + ferpa@uvu.edu) can be BCC'd on every notification.
+        """
+        raw = self._config.user_notification_bcc or ""
+        addresses: List[str] = []
+        for part in raw.replace(";", ",").split(","):
+            addr = part.strip()
+            if addr:
+                addresses.append(addr)
+        return addresses
+
     async def send_user_notification(self, event_id: str, disposition: str) -> bool:
         """Full notification flow for a single event.
 
@@ -154,15 +168,17 @@ class UserNotifier:
             # Resolve recipients
             recipients = await self._resolve_recipients(event)
             if not recipients:
-                if self._config.user_notification_bcc:
+                bcc_list = self._bcc_addresses()
+                if bcc_list:
                     # No end-user recipient found, but BCC is configured —
-                    # send directly to BCC so the admin still gets a copy.
+                    # send directly to the first BCC so the admin still gets a
+                    # copy. Remaining BCCs continue to receive via the Bcc header.
                     logger.info(
-                        "No recipients resolved for event %s, sending to BCC address",
-                        event_id,
+                        "No recipients resolved for event %s, sending to BCC address(es): %s",
+                        event_id, bcc_list,
                     )
                     recipients = [{
-                        "email": self._config.user_notification_bcc,
+                        "email": bcc_list[0],
                         "name": "ShareSentinel Admin",
                         "type": "bcc_fallback",
                     }]
@@ -661,12 +677,17 @@ class UserNotifier:
             return False
 
         try:
+            bcc_list = self._bcc_addresses()
+            # Drop any BCC entry equal to the To address so we don't duplicate
+            # delivery (matters for the bcc_fallback case where To == bcc[0]).
+            extra_bcc = [a for a in bcc_list if a.lower() != to_address.lower()]
+
             msg = MIMEMultipart("alternative")
             msg["Subject"] = subject
             msg["From"] = config.email_from
             msg["To"] = to_address
-            if config.user_notification_bcc:
-                msg["Bcc"] = config.user_notification_bcc
+            if extra_bcc:
+                msg["Bcc"] = ", ".join(extra_bcc)
 
             # Plain text fallback
             plain = (
@@ -678,9 +699,7 @@ class UserNotifier:
             msg.attach(MIMEText(html_body, "html"))
 
             # Build envelope recipients (To + Bcc)
-            envelope_recipients = [to_address]
-            if config.user_notification_bcc:
-                envelope_recipients.append(config.user_notification_bcc)
+            envelope_recipients = [to_address] + extra_bcc
 
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(

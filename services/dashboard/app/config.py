@@ -63,13 +63,23 @@ AZURE_CERTIFICATE_PASS = os.environ.get("AZURE_CERTIFICATE_PASS", "")
 DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "http://localhost:8080")
 
 # --- Auth feature toggle ---
-# Auth is enabled by default. Set AUTH_DISABLED=true to explicitly disable.
+# Auth is enabled by default. Disabling requires BOTH AUTH_DISABLED=true and
+# DASHBOARD_ENV=development — a single leftover env var must never expose
+# tenant-mutating endpoints (allow-list writes) on a production deployment.
 _auth_disabled_explicit = os.environ.get("AUTH_DISABLED", "").lower() == "true"
+_dashboard_env = os.environ.get("DASHBOARD_ENV", "production").lower()
+
+if _auth_disabled_explicit and _dashboard_env != "development":
+    logger.critical(
+        "AUTH_DISABLED=true is only honored when DASHBOARD_ENV=development. "
+        "Refusing to start with authentication disabled in %r.", _dashboard_env,
+    )
+    sys.exit(1)
 
 if _auth_disabled_explicit:
     AUTH_ENABLED = False
     logger.warning(
-        "*** AUTHENTICATION IS DISABLED (AUTH_DISABLED=true) — "
+        "*** AUTHENTICATION IS DISABLED (AUTH_DISABLED=true, development) — "
         "all endpoints are publicly accessible ***"
     )
 elif OIDC_CLIENT_ID:

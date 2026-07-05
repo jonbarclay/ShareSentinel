@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 from app.database.repositories import AuditLogRepository, EventRepository
 
 QUEUE_KEY = "sharesentinel:jobs"
+# Jobs are BLMOVE'd here while being processed, and LREM'd on completion.
+# Anything still here at startup was in flight when the worker died and is
+# moved back onto the main queue (single-worker deployment).
+PROCESSING_KEY = "sharesentinel:jobs:processing"
 HEARTBEAT_KEY = "sharesentinel:worker:heartbeat"
 HEARTBEAT_INTERVAL_S = 60
 CLEANUP_INTERVAL_S = 300  # 5 minutes
@@ -239,6 +243,58 @@ async def recover_stuck_events(
     )
 
 
+async def recover_orphaned_queued_events(
+    db_pool: Any,
+    redis_conn: aioredis.Redis,
+    config: Config,
+) -> None:
+    """Re-enqueue events stuck in 'queued' whose delayed Redis push was lost.
+
+    The retry path marks the row 'queued' and schedules the actual RPUSH from
+    an in-memory task; a worker restart during the backoff drops that task and
+    the event sits 'queued' forever (the processing-recovery sweep only looks
+    at 'processing'). Age threshold: comfortably past the longest retry
+    backoff, so we never double-push a retry that is simply still waiting.
+    """
+    event_repo = EventRepository(db_pool)
+    audit_repo = AuditLogRepository(db_pool)
+
+    max_backoff_s = config.requeue_base_delay_seconds * (2 ** max(0, config.max_event_retries - 1))
+    min_age_minutes = max(10, int(max_backoff_s // 60) + 5)
+
+    orphans = await event_repo.get_orphaned_queued_events(min_age_minutes)
+    if not orphans:
+        logger.info("Startup recovery sweep: no orphaned 'queued' events found")
+        return
+
+    logger.warning(
+        "Startup recovery sweep: found %d orphaned 'queued' events (age > %dm)",
+        len(orphans), min_age_minutes,
+    )
+    for row in orphans:
+        eid = row["event_id"]
+        job_payload = {
+            "event_id": eid,
+            "operation": row.get("operation", ""),
+            "workload": row.get("workload"),
+            "user_id": row.get("user_id", ""),
+            "object_id": row.get("object_id", ""),
+            "site_url": row.get("site_url"),
+            "file_name": row.get("file_name"),
+            "relative_path": row.get("relative_path"),
+            "item_type": row.get("item_type", "File"),
+            "sharing_type": row.get("sharing_type"),
+            "sharing_scope": row.get("sharing_scope"),
+            "sharing_permission": row.get("sharing_permission"),
+            "event_time": row["event_time"].isoformat() if row.get("event_time") else None,
+        }
+        await redis_conn.rpush(QUEUE_KEY, json.dumps(job_payload))
+        await audit_repo.log(eid, "recovery_requeued_orphaned_queued", {
+            "retry_count": row.get("retry_count") or 0,
+        })
+    logger.info("Re-enqueued %d orphaned 'queued' events", len(orphans))
+
+
 # -- Main loop ---------------------------------------------------------------
 
 async def main() -> None:
@@ -271,8 +327,43 @@ async def main() -> None:
         logger.info("Loaded %d DB config overrides", len(db_overrides))
         config = Config.from_env(db_overrides=db_overrides)
 
+    # Reclaim jobs that were popped but not finished when a prior worker died.
+    # (BLMOVE parks in-flight jobs on PROCESSING_KEY; a clean completion LREMs
+    # them, so anything still there is orphaned.)
+    reclaimed = 0
+    while True:
+        moved = await redis_conn.lmove(PROCESSING_KEY, QUEUE_KEY, "LEFT", "LEFT")
+        if moved is None:
+            break
+        reclaimed += 1
+    if reclaimed:
+        logger.warning(
+            "Reclaimed %d in-flight job(s) from a previous worker run", reclaimed,
+        )
+
     # Recover events stuck in 'processing' from a prior crash/restart
     await recover_stuck_events(db_pool, redis_conn, config)
+
+    # Recover events whose delayed retry push died with a prior worker
+    await recover_orphaned_queued_events(db_pool, redis_conn, config)
+
+    # Config consistency: event-driven CWS remediation exempts users via the
+    # Redis set maintained by lifecycle-cron's exception-group sync loop. If
+    # that loop isn't running the set is missing and EVERY OneDrive owner is
+    # treated as non-exempt — enforcement fires against exception-group
+    # members. Surface loudly at startup.
+    if config.event_remediation_enabled:
+        try:
+            has_exemptions = await redis_conn.exists("sharesentinel:cws_exception_upns")
+            if not has_exemptions:
+                logger.error(
+                    "EVENT_REMEDIATION_ENABLED=true but the CWS exemption set "
+                    "(sharesentinel:cws_exception_upns) is absent from Redis. "
+                    "Enable CWS_EXCEPTION_GROUP_SYNC_ENABLED in lifecycle-cron "
+                    "or exception-group members' OneDrives WILL be remediated."
+                )
+        except Exception:
+            logger.warning("Could not verify CWS exemption set at startup", exc_info=True)
 
     # AI provider
     ai_provider = create_ai_provider(config)
@@ -356,54 +447,79 @@ async def main() -> None:
         QUEUE_KEY, config.max_concurrent_jobs, config.max_concurrent_av_jobs,
     )
 
-    async def _run_job(job: dict[str, Any]) -> None:
-        async with semaphore:
+    async def _run_job(job_json: str, job: dict[str, Any]) -> None:
+        # Caller holds a semaphore slot on our behalf; release it when done.
+        try:
+            await process_job(
+                job_data=job,
+                config=config,
+                db_pool=db_pool,
+                redis=redis_conn,
+                ai_provider=ai_provider,
+                notifier_dispatcher=notifier_dispatcher,
+                second_look_provider=second_look_provider,
+                av_semaphore=av_semaphore,
+            )
+        except Exception:
+            logger.error(
+                "Error processing job %s", job.get("event_id", "?"),
+                exc_info=True,
+            )
+        finally:
+            # Job reached a terminal state in process_job (completed/failed/
+            # requeued) — drop the in-flight copy so it isn't reclaimed.
             try:
-                await process_job(
-                    job_data=job,
-                    config=config,
-                    db_pool=db_pool,
-                    redis=redis_conn,
-                    ai_provider=ai_provider,
-                    notifier_dispatcher=notifier_dispatcher,
-                    second_look_provider=second_look_provider,
-                    av_semaphore=av_semaphore,
-                )
+                await redis_conn.lrem(PROCESSING_KEY, 1, job_json)
             except Exception:
-                logger.error(
-                    "Error processing job %s", job.get("event_id", "?"),
-                    exc_info=True,
-                )
+                logger.warning("Failed to LREM in-flight job copy", exc_info=True)
+            semaphore.release()
 
     while not shutdown_event.is_set():
+        have_slot = False
         try:
-            # BLPOP with 5-second timeout so we can check shutdown_event periodically
-            result: Optional[list[Any]] = await redis_conn.blpop(QUEUE_KEY, timeout=5)  # type: ignore[assignment]
-            if result is None:
+            # Hold a concurrency slot BEFORE pulling a job so we never pop
+            # more jobs into memory than we can run.
+            await semaphore.acquire()
+            have_slot = True
+
+            # BLMOVE (not BLPOP): the job atomically moves to PROCESSING_KEY
+            # so a crash between pop and completion can be reclaimed at the
+            # next startup instead of losing the event. 5s timeout so we can
+            # check shutdown_event periodically.
+            job_json: Optional[str] = await redis_conn.blmove(
+                QUEUE_KEY, PROCESSING_KEY, 5, "LEFT", "RIGHT",
+            )
+            if job_json is None:
                 # Timeout -- no job available; loop back to check shutdown flag
+                semaphore.release()
                 continue
 
-            _key, job_json = result
-            job: dict[str, Any] = json.loads(job_json)
+            try:
+                job: dict[str, Any] = json.loads(job_json)
+            except json.JSONDecodeError as exc:
+                logger.error("Invalid JSON on queue (discarding): %s", exc)
+                await redis_conn.lrem(PROCESSING_KEY, 1, job_json)
+                semaphore.release()
+                continue
+
             logger.info(
                 "Received job: event_id=%s file=%s",
                 job.get("event_id", "?"),
                 job.get("file_name", "?"),
             )
 
-            # Wait for a slot before accepting the next job
-            await semaphore.acquire()
-            semaphore.release()
-
-            task = asyncio.create_task(_run_job(job))
+            task = asyncio.create_task(_run_job(job_json, job))
+            have_slot = False  # ownership transferred to the task
             active_tasks.add(task)
             task.add_done_callback(active_tasks.discard)
 
-        except json.JSONDecodeError as exc:
-            logger.error("Invalid JSON on queue: %s", exc)
         except asyncio.CancelledError:
+            if have_slot:
+                semaphore.release()
             break
         except Exception:
+            if have_slot:
+                semaphore.release()
             logger.error("Unhandled exception in main loop", exc_info=True)
             await asyncio.sleep(5)
 

@@ -179,8 +179,8 @@ async def batch_get_group_sites(
         "Content-Type": "application/json",
     }
 
-    for i in range(0, len(group_ids), 20):
-        chunk = group_ids[i : i + 20]
+    async def _run_batch(chunk: list[str]) -> list[str]:
+        """POST one $batch of site lookups; returns ids worth retrying."""
         requests = [
             {
                 "id": gid,
@@ -192,39 +192,159 @@ async def batch_get_group_sites(
         batch_body = {"requests": requests}
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
-            resp = await client.post(
-                f"{GRAPH_BASE}/$batch",
-                headers=headers,
-                json=batch_body,
-            )
-            if resp.status_code == 429:
-                retry_after = int(resp.headers.get("Retry-After", "10"))
-                logger.warning("Graph batch 429 — sleeping %ds", retry_after)
-                await asyncio.sleep(retry_after)
+            for _attempt in range(4):
                 resp = await client.post(
                     f"{GRAPH_BASE}/$batch",
                     headers=headers,
                     json=batch_body,
                 )
+                if resp.status_code != 429:
+                    break
+                retry_after = int(resp.headers.get("Retry-After", "10"))
+                logger.warning("Graph batch 429 — sleeping %ds", retry_after)
+                await asyncio.sleep(retry_after)
             resp.raise_for_status()
             data = resp.json()
 
+        failed: list[str] = []
         for item in data.get("responses", []):
-            if item.get("status") == 200:
+            status = item.get("status")
+            if status == 200:
                 body = item.get("body", {})
                 web_url = body.get("webUrl", "")
                 if web_url:
                     result[item["id"]] = web_url
+            elif status == 404:
+                # Group has no site (yet) — normal for very new groups.
+                logger.debug("No site for group %s (404)", item.get("id"))
             else:
-                logger.debug(
-                    "Batch site lookup failed for group %s: %s",
-                    item.get("id"), item.get("status"),
+                # A failed lookup leaves the group's site URL unknown, which
+                # silently skips the post-remediation policy cascade for that
+                # site — surface it and retry once.
+                logger.warning(
+                    "Batch site lookup failed for group %s: HTTP %s",
+                    item.get("id"), status,
                 )
+                if item.get("id"):
+                    failed.append(item["id"])
+        return failed
 
+    retry_ids: list[str] = []
+    for i in range(0, len(group_ids), 20):
+        retry_ids.extend(await _run_batch(group_ids[i : i + 20]))
         await asyncio.sleep(0.2)  # Rate limit between batches
+
+    if retry_ids:
+        logger.info("Retrying %d failed group site lookups", len(retry_ids))
+        await asyncio.sleep(5)
+        still_failed: list[str] = []
+        for i in range(0, len(retry_ids), 20):
+            still_failed.extend(await _run_batch(retry_ids[i : i + 20]))
+            await asyncio.sleep(0.2)
+        if still_failed:
+            logger.warning(
+                "%d group site lookups failed after retry (policy cascade "
+                "will be skipped for these groups this scan): %s",
+                len(still_failed), still_failed[:10],
+            )
 
     logger.info("Resolved %d/%d group site URLs", len(result), len(group_ids))
     return result
+
+
+async def get_group_member_upns(
+    auth: GraphAuth,
+    group_id: str,
+) -> set[str]:
+    """Fetch userPrincipalNames of every DIRECT user member of an Entra ID group.
+
+    Deliberately direct-only (/members, not /transitiveMembers): the CWS
+    exception group is managed as a flat list of users by policy (decision
+    2026-07-05) — nesting a group inside it does NOT confer exemption. The
+    PowerShell scripts' Graph queries use the same shape; keep them in sync
+    if this ever changes.
+
+    Returns a set of lowercased UPNs. Raises on non-transient errors so the
+    caller can fail-closed rather than remediate with a stale/empty set.
+    """
+    headers = {
+        "Authorization": f"Bearer {auth.get_access_token()}",
+        "ConsistencyLevel": "eventual",
+    }
+    upns: set[str] = set()
+
+    url: str | None = f"{GRAPH_BASE}/groups/{group_id}/members/microsoft.graph.user"
+    first_page = True
+    initial_params = {
+        "$select": "id,userPrincipalName",
+        "$top": "999",
+    }
+    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        while url:
+            resp = await client.get(
+                url,
+                headers=headers,
+                params=initial_params if first_page else None,
+            )
+            first_page = False
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", "10"))
+                logger.warning("Graph 429 on group members — sleeping %ds", retry_after)
+                await asyncio.sleep(retry_after)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            for m in data.get("value", []):
+                upn = (m.get("userPrincipalName") or "").strip().lower()
+                if upn:
+                    upns.add(upn)
+            url = data.get("@odata.nextLink")
+
+    logger.info("Resolved %d UPNs from group %s", len(upns), group_id)
+    return upns
+
+
+# NOTE: an unused /sites/delta full-tenant enumerator (enumerate_all_sites)
+# was removed 2026-07-05 — the site inventory now comes from PnP PowerShell
+# (scripts/Get-SitePolicyInventory.ps1) which pages correctly at tenant scale.
+
+
+async def get_group(auth: GraphAuth, group_id: str) -> dict | None:
+    """Fetch a single group's policy-relevant properties.
+
+    Returns the group dict (id, displayName, visibility, groupTypes) or None
+    if the group does not exist (404 — e.g. deleted, or directory replication
+    has not caught up yet). Honors 429 with a single retry.
+    """
+    headers = {"Authorization": f"Bearer {auth.get_access_token()}"}
+    url = f"{GRAPH_BASE}/groups/{group_id}"
+    params = {"$select": "id,displayName,visibility,groupTypes"}
+
+    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        resp = await client.get(url, headers=headers, params=params)
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", "10"))
+            logger.warning("Graph 429 on group GET — sleeping %ds", retry_after)
+            await asyncio.sleep(retry_after)
+            resp = await client.get(url, headers=headers, params=params)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def get_group_site_url(auth: GraphAuth, group_id: str) -> str:
+    """Resolve a group's root SharePoint site webUrl. Empty string if absent
+    (site provisioning lags group creation, sometimes by minutes)."""
+    headers = {"Authorization": f"Bearer {auth.get_access_token()}"}
+    url = f"{GRAPH_BASE}/groups/{group_id}/sites/root"
+    params = {"$select": "id,webUrl"}
+
+    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        resp = await client.get(url, headers=headers, params=params)
+        if resp.status_code != 200:
+            return ""
+        return resp.json().get("webUrl", "") or ""
 
 
 async def set_group_visibility(

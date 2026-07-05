@@ -94,7 +94,109 @@ interface EventSummary {
   };
 }
 
-type TabId = "sharing" | "visibility" | "events";
+type TabId =
+  | "sharing"
+  | "visibility"
+  | "company-wide-sharing"
+  | "cws-verification"
+  | "events";
+
+interface CwsAllowlistSite {
+  id: number;
+  site_id: string;
+  site_url: string;
+  site_display_name: string;
+  added_by: string;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface CwsExceptionMember {
+  id: string;
+  displayName: string;
+  mail: string;
+  userPrincipalName: string;
+}
+
+interface CwsScan {
+  id: number;
+  trigger_type: string;
+  triggered_by: string;
+  status: string;
+  dry_run: boolean;
+  started_at: string | null;
+  completed_at: string | null;
+  total_sites_scanned: number;
+  violations_found: number;
+  remediated: number;
+  would_remediate: number;
+  skipped_allowlist: number;
+  skipped_exception_group: number;
+  already_compliant: number;
+  errors: number;
+  exception_group_member_count: number;
+  error_message: string | null;
+  created_at: string;
+}
+
+interface CwsFailure {
+  event_id: number;
+  scan_id: number;
+  site_url: string;
+  site_display_name: string;
+  site_type: string;
+  user_upn: string;
+  previous_value: string;
+  new_value: string;
+  error_message: string | null;
+  failed_at: string;
+  failure_category: string | null;
+  diagnostic_summary: string | null;
+  last_diagnosed_at: string | null;
+  diagnostic_exit_code: number | null;
+  diagnostic_event_id: number | null;
+}
+
+interface CwsFailureCategoryCount {
+  failure_category: string;
+  count: number;
+}
+
+interface CwsVerificationScan {
+  id: number;
+  trigger_type: string;
+  triggered_by: string;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  total_candidates: number;
+  checked: number;
+  drifts_found: number;
+  unprovisioned_count: number;
+  ok_count: number;
+  errors: number;
+  exception_group_member_count: number;
+  last_checkpoint_cursor: string;
+  error_message: string | null;
+  created_at: string;
+}
+
+interface CwsVerificationEvent {
+  id: number;
+  scan_id: number | null;
+  site_url: string;
+  site_display_name: string;
+  site_type: string;
+  user_upn: string;
+  expected_value: string;
+  actual_value: string;
+  drift_type: string;
+  exempt_reason: string;
+  trigger_source: string;
+  error_message: string | null;
+  created_at: string;
+}
 
 function formatDate(iso: string | null) {
   if (!iso) return "-";
@@ -768,7 +870,878 @@ function VisibilityTab() {
   );
 }
 
-// --- Tab 3: Enforcement Events ---
+// --- Tab 3: Company-Wide Sharing Links ---
+
+function CompanyWideSharingTab() {
+  const [sites, setSites] = useState<CwsAllowlistSite[]>([]);
+  const [sitesTotal, setSitesTotal] = useState(0);
+  const [sitesPage, setSitesPage] = useState(1);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [selectedSite, setSelectedSite] = useState<SearchResult | null>(null);
+  const [notes, setNotes] = useState("");
+  const [actionError, setActionError] = useState<string | null>(null);
+  const searchTimeout = useRef<ReturnType<typeof setTimeout>>();
+
+  const [members, setMembers] = useState<CwsExceptionMember[]>([]);
+  const [memberGroupId, setMemberGroupId] = useState("");
+  const [membersError, setMembersError] = useState("");
+  const [membersLoading, setMembersLoading] = useState(true);
+  const [showMembers, setShowMembers] = useState(false);
+
+  const [scanning, setScanning] = useState(false);
+  const [scanMessage, setScanMessage] = useState("");
+  const [recentScans, setRecentScans] = useState<CwsScan[]>([]);
+
+  const [failures, setFailures] = useState<CwsFailure[]>([]);
+  const [failuresTotal, setFailuresTotal] = useState(0);
+  const [failuresPage, setFailuresPage] = useState(1);
+  const [categoryCounts, setCategoryCounts] = useState<CwsFailureCategoryCount[]>([]);
+  const [categoryFilter, setCategoryFilter] = useState("");
+  const [diagnosingSite, setDiagnosingSite] = useState<string | null>(null);
+  const [remediatingSite, setRemediatingSite] = useState<string | null>(null);
+  const [failuresError, setFailuresError] = useState<string | null>(null);
+  const failuresPerPage = 25;
+
+  const fetchFailures = useCallback(() => {
+    const params = new URLSearchParams({
+      page: String(failuresPage),
+      per_page: String(failuresPerPage),
+    });
+    if (categoryFilter) params.set("category", categoryFilter);
+    apiFetch<{
+      total: number;
+      failures: CwsFailure[];
+      category_counts: CwsFailureCategoryCount[];
+    }>(`/company-wide-sharing/failures?${params.toString()}`)
+      .then((data) => {
+        setFailures(data.failures);
+        setFailuresTotal(data.total);
+        setCategoryCounts(data.category_counts);
+        setFailuresError(null);
+      })
+      .catch((err) => {
+        setFailuresError(err instanceof Error ? err.message : "Failed to load");
+      });
+  }, [failuresPage, categoryFilter]);
+
+  const fetchSites = useCallback(() => {
+    apiFetch<{ total: number; sites: CwsAllowlistSite[] }>(
+      `/company-wide-sharing/allowlist?page=${sitesPage}&per_page=50`
+    ).then((data) => {
+      setSites(data.sites);
+      setSitesTotal(data.total);
+    });
+  }, [sitesPage]);
+
+  const fetchMembers = useCallback(() => {
+    setMembersLoading(true);
+    apiFetch<{ group_id: string; members: CwsExceptionMember[]; error?: string }>(
+      "/company-wide-sharing/exception-group/members"
+    )
+      .then((data) => {
+        setMemberGroupId(data.group_id);
+        setMembers(data.members);
+        setMembersError(data.error || "");
+      })
+      .catch((err) =>
+        setMembersError(err instanceof Error ? err.message : "Failed"),
+      )
+      .finally(() => setMembersLoading(false));
+  }, []);
+
+  const fetchRecentScans = useCallback(() => {
+    apiFetch<{ scans: CwsScan[] }>(
+      "/company-wide-sharing/scans?page=1&per_page=5",
+    ).then((data) => setRecentScans(data.scans));
+  }, []);
+
+  useEffect(() => {
+    fetchSites();
+  }, [fetchSites]);
+
+  useEffect(() => {
+    fetchMembers();
+    fetchRecentScans();
+  }, [fetchMembers, fetchRecentScans]);
+
+  useEffect(() => {
+    fetchFailures();
+  }, [fetchFailures]);
+
+  async function handleDiagnoseSite(siteUrl: string) {
+    setDiagnosingSite(siteUrl);
+    try {
+      await apiFetch<{ queued: boolean; reason?: string }>(
+        "/company-wide-sharing/failures/diagnose",
+        { method: "POST", body: JSON.stringify({ site_url: siteUrl }) },
+      );
+    } catch (err) {
+      setFailuresError(err instanceof Error ? err.message : "Failed to queue");
+    } finally {
+      setDiagnosingSite(null);
+      // Diagnostic runs async in lifecycle-cron — give it a moment, then refresh.
+      setTimeout(fetchFailures, 4000);
+    }
+  }
+
+  async function handleRemediateSite(siteUrl: string, siteDisplayName: string) {
+    const label = siteDisplayName || siteUrl;
+    if (
+      !window.confirm(
+        `Re-run the disable-CWS action against:\n\n${label}\n\nThis runs Invoke-CwsAllowlistAction.ps1 and sets DisableCompanyWideSharingLinks=Disabled on the site.`,
+      )
+    ) {
+      return;
+    }
+    setRemediatingSite(siteUrl);
+    try {
+      await apiFetch<{ queued: boolean; reason?: string }>(
+        "/company-wide-sharing/failures/remediate",
+        { method: "POST", body: JSON.stringify({ site_url: siteUrl }) },
+      );
+    } catch (err) {
+      setFailuresError(err instanceof Error ? err.message : "Failed to queue");
+    } finally {
+      setRemediatingSite(null);
+      // Remediation runs async via the CWS allowlist action loop — refresh
+      // after a delay so the row clears once the success event lands.
+      setTimeout(fetchFailures, 8000);
+    }
+  }
+
+  useEffect(() => {
+    if (searchTimeout.current) clearTimeout(searchTimeout.current);
+    if (searchQuery.length < 2) {
+      setSearchResults([]);
+      setShowDropdown(false);
+      return;
+    }
+    searchTimeout.current = setTimeout(() => {
+      apiFetch<{ sites: SearchResult[] }>(
+        `/company-wide-sharing/allowlist/search?q=${encodeURIComponent(searchQuery)}`,
+      ).then((data) => {
+        setSearchResults(data.sites);
+        setShowDropdown(true);
+      });
+    }, 300);
+  }, [searchQuery]);
+
+  function handleSelectSite(site: SearchResult) {
+    if (site.already_allowed) return;
+    setSelectedSite(site);
+    setShowDropdown(false);
+    setSearchQuery("");
+    setNotes("");
+  }
+
+  async function handleAddSite() {
+    if (!selectedSite) return;
+    setActionError(null);
+    try {
+      await apiPost("/company-wide-sharing/allowlist", {
+        site_id: selectedSite.site_id,
+        site_url: selectedSite.web_url,
+        site_display_name: selectedSite.display_name,
+        notes,
+      });
+      setSelectedSite(null);
+      setNotes("");
+      fetchSites();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to add site");
+    }
+  }
+
+  async function handleRemoveSite(id: number) {
+    if (!confirm("Remove this site from the Company-Wide Sharing allow list?")) return;
+    setActionError(null);
+    try {
+      await apiDelete(`/company-wide-sharing/allowlist/${id}`);
+      fetchSites();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to remove site");
+    }
+  }
+
+  async function handleTriggerScan() {
+    setScanning(true);
+    setScanMessage("");
+    try {
+      const res = await apiPost<{ scan_id: number; dry_run: boolean }>(
+        "/company-wide-sharing/scan",
+        {},
+      );
+      setScanMessage(
+        `Queued scan #${res.scan_id} (${res.dry_run ? "dry-run" : "live enforcement"}). Check Recent Scans below.`,
+      );
+      setTimeout(fetchRecentScans, 2000);
+    } catch (err) {
+      setScanMessage(err instanceof Error ? err.message : "Scan failed to queue");
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  const totalPages = Math.ceil(sitesTotal / 50);
+  const entraGroupUrl = memberGroupId
+    ? `https://entra.microsoft.com/#view/Microsoft_AAD_IAM/GroupDetailsMenuBlade/~/Members/groupId/${memberGroupId}`
+    : "";
+
+  return (
+    <>
+      <div className="card" style={{ padding: "10px 14px", marginBottom: 12, background: "#f4f6fb" }}>
+        <strong>Company-Wide Sharing Links policy.</strong> When enabled, ShareSentinel
+        sets <code>DisableCompanyWideSharingLinks = Disabled</code> on every SharePoint site
+        and OneDrive personal site, except sites on the allow list below and OneDrive users
+        in the Entra ID exception group. Until <code>COMPANY_WIDE_SHARING_DRY_RUN</code> is
+        flipped to <code>false</code>, scans only log what <em>would</em> change.
+      </div>
+
+      {actionError && (
+        <div className="card" style={{ background: "#ffebe6", color: "#de350b", padding: "10px 14px", fontWeight: 600, marginBottom: 12 }}>
+          {actionError}
+        </div>
+      )}
+
+      <div className="add-site-section">
+        <h3>Add Site (allow company-wide links)</h3>
+        {!selectedSite ? (
+          <div className="search-wrapper">
+            <input
+              className="filter-input search-input"
+              placeholder="Search SharePoint sites..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onFocus={() => searchResults.length > 0 && setShowDropdown(true)}
+              onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
+            />
+            {showDropdown && searchResults.length > 0 && (
+              <div className="search-dropdown">
+                {searchResults.map((site) => (
+                  <div
+                    key={site.site_id}
+                    className="search-item"
+                    onMouseDown={() => handleSelectSite(site)}
+                  >
+                    <div className="search-item-name">
+                      {site.display_name}
+                      {site.already_allowed && (
+                        <span className="badge-allowed">Already allowed</span>
+                      )}
+                    </div>
+                    <div className="search-item-url">{site.web_url}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="add-site-form">
+            <span className="selected-name">
+              {selectedSite.display_name} ({selectedSite.web_url})
+            </span>
+            <input
+              className="filter-input notes-input"
+              placeholder="Notes (optional)"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+            />
+            <button className="add-btn" onClick={handleAddSite}>
+              Add to Allow List
+            </button>
+            <button className="cancel-btn" onClick={() => setSelectedSite(null)}>
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="table-wrapper card">
+        {sites.length === 0 ? (
+          <div className="empty-message">No sites on the company-wide sharing allow list yet.</div>
+        ) : (
+          <table className="allowlist-table">
+            <thead>
+              <tr>
+                <th>Site Name</th>
+                <th>Site URL</th>
+                <th>Added By</th>
+                <th>Added At</th>
+                <th>Notes</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sites.map((site) => (
+                <tr key={site.id}>
+                  <td>{site.site_display_name || site.site_id}</td>
+                  <td>
+                    <a
+                      href={site.site_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {site.site_url}
+                    </a>
+                  </td>
+                  <td>{site.added_by || "-"}</td>
+                  <td>{formatDate(site.created_at)}</td>
+                  <td>{site.notes || "-"}</td>
+                  <td>
+                    <button
+                      className="remove-btn"
+                      onClick={() => handleRemoveSite(site.id)}
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {totalPages > 1 && (
+        <div className="pagination-bar">
+          <button
+            className="pagination-btn"
+            disabled={sitesPage <= 1}
+            onClick={() => setSitesPage((p) => p - 1)}
+          >
+            Prev
+          </button>
+          <span className="pagination-info">
+            Page {sitesPage} / {totalPages}
+          </span>
+          <button
+            className="pagination-btn"
+            disabled={sitesPage >= totalPages}
+            onClick={() => setSitesPage((p) => p + 1)}
+          >
+            Next
+          </button>
+        </div>
+      )}
+
+      <div className="card" style={{ padding: 14, marginTop: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h3 style={{ margin: 0 }}>Exempt users (OrgWideSharingLinkException)</h3>
+          <button
+            className="pagination-btn"
+            onClick={() => setShowMembers((v) => !v)}
+          >
+            {showMembers ? "Hide" : "Show"}
+          </button>
+        </div>
+        <div style={{ marginTop: 8, fontSize: 13, color: "#5e6c84" }}>
+          Membership is managed in Entra ID. Edit the group there to change exemptions.{" "}
+          {entraGroupUrl && (
+            <a href={entraGroupUrl} target="_blank" rel="noopener noreferrer">
+              Open group in Entra
+            </a>
+          )}
+        </div>
+        {showMembers && (
+          <div style={{ marginTop: 12 }}>
+            {membersLoading && <div>Loading members...</div>}
+            {membersError && (
+              <div style={{ color: "#de350b" }}>{membersError}</div>
+            )}
+            {!membersLoading && !membersError && members.length === 0 && (
+              <div className="empty-message">No members in the exception group.</div>
+            )}
+            {!membersLoading && !membersError && members.length > 0 && (
+              <table className="allowlist-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>UPN</th>
+                    <th>Mail</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {members.map((m) => (
+                    <tr key={m.id}>
+                      <td>{m.displayName || "-"}</td>
+                      <td>{m.userPrincipalName || "-"}</td>
+                      <td>{m.mail || "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="card" style={{ padding: 14, marginTop: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h3 style={{ margin: 0 }}>
+            Failed to disable{" "}
+            <span style={{ fontSize: 13, color: "#5e6c84", fontWeight: 400 }}>
+              ({failuresTotal} site{failuresTotal === 1 ? "" : "s"} currently
+              unremediated)
+            </span>
+          </h3>
+          <button className="pagination-btn" onClick={fetchFailures}>
+            Refresh
+          </button>
+        </div>
+        <div style={{ marginTop: 6, fontSize: 13, color: "#5e6c84" }}>
+          Sites and OneDrives whose last CWS remediation attempt did not succeed.
+          The diagnostic loop runs Diagnose-OneDriveSite.ps1 against each one and
+          parses the reason (locked OneDrive, A1 quota cap, deleted user, etc.).
+          Click "Re-diagnose" to refresh on demand.
+        </div>
+        {categoryCounts.length > 0 && (
+          <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <button
+              className="pagination-btn"
+              style={categoryFilter === "" ? { background: "#0052cc", color: "white" } : undefined}
+              onClick={() => { setCategoryFilter(""); setFailuresPage(1); }}
+            >
+              All
+            </button>
+            {categoryCounts.map((c) => (
+              <button
+                key={c.failure_category}
+                className="pagination-btn"
+                style={
+                  categoryFilter === c.failure_category
+                    ? { background: "#0052cc", color: "white" }
+                    : undefined
+                }
+                onClick={() => {
+                  setCategoryFilter(
+                    c.failure_category === "undiagnosed" ? "" : c.failure_category,
+                  );
+                  setFailuresPage(1);
+                }}
+              >
+                {c.failure_category} ({c.count})
+              </button>
+            ))}
+          </div>
+        )}
+        {failuresError && (
+          <div style={{ marginTop: 10, color: "#de350b" }}>{failuresError}</div>
+        )}
+        {failures.length === 0 ? (
+          <div className="empty-message" style={{ marginTop: 12 }}>
+            No currently-failing CWS remediations. Either everything succeeded or
+            no remediation has run since the failures were last cleared.
+          </div>
+        ) : (
+          <>
+            <table className="allowlist-table" style={{ marginTop: 12 }}>
+              <thead>
+                <tr>
+                  <th>Site / OneDrive</th>
+                  <th>User</th>
+                  <th>Reason</th>
+                  <th>Diagnostic summary</th>
+                  <th>Original error</th>
+                  <th>Last diagnosed</th>
+                  <th>Failed at</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {failures.map((f) => {
+                  const cat = f.failure_category || "undiagnosed";
+                  const catBg = cat === "undiagnosed"
+                    ? "#dfe1e6"
+                    : cat === "user_purged"
+                      ? "#c1c7d0"
+                      : cat === "no_onedrive_provisioned" || cat === "user_deleted" || cat === "user_recently_deleted"
+                        ? "#fff0b3"
+                        : cat === "access_denied" || cat === "lockstate_locked"
+                          ? "#ffbdad"
+                          : cat === "quota_exceeded" || cat === "a1_license_cap"
+                            ? "#ffe2bd"
+                            : "#deebff";
+                  return (
+                    <tr key={f.event_id}>
+                      <td style={{ maxWidth: 300, wordBreak: "break-all" }}>
+                        <a href={f.site_url} target="_blank" rel="noopener noreferrer">
+                          {f.site_display_name || f.site_url}
+                        </a>
+                        <div style={{ fontSize: 11, color: "#5e6c84" }}>
+                          {f.site_type}
+                        </div>
+                      </td>
+                      <td>{f.user_upn || "-"}</td>
+                      <td>
+                        <span
+                          style={{
+                            background: catBg,
+                            color: "#172b4d",
+                            padding: "2px 8px",
+                            borderRadius: 4,
+                            fontSize: 12,
+                            fontWeight: 600,
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {cat}
+                        </span>
+                      </td>
+                      <td
+                        style={{ maxWidth: 360, fontSize: 12 }}
+                        title={f.diagnostic_summary || ""}
+                      >
+                        {f.diagnostic_summary || (
+                          <span style={{ color: "#5e6c84" }}>not yet diagnosed</span>
+                        )}
+                      </td>
+                      <td
+                        style={{ maxWidth: 260, fontSize: 12 }}
+                        title={f.error_message || ""}
+                      >
+                        {f.error_message
+                          ? f.error_message.length > 80
+                            ? f.error_message.slice(0, 80) + "…"
+                            : f.error_message
+                          : "-"}
+                      </td>
+                      <td style={{ fontSize: 12 }}>{formatDate(f.last_diagnosed_at)}</td>
+                      <td style={{ fontSize: 12 }}>{formatDate(f.failed_at)}</td>
+                      <td>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          <button
+                            className="pagination-btn"
+                            disabled={diagnosingSite === f.site_url}
+                            onClick={() => handleDiagnoseSite(f.site_url)}
+                          >
+                            {diagnosingSite === f.site_url ? "Queuing…" : "Re-diagnose"}
+                          </button>
+                          <button
+                            className="pagination-btn"
+                            disabled={remediatingSite === f.site_url}
+                            title="Re-run Invoke-CwsAllowlistAction.ps1 to set DisableCompanyWideSharingLinks=Disabled on this site"
+                            onClick={() =>
+                              handleRemediateSite(
+                                f.site_url,
+                                f.site_display_name || "",
+                              )
+                            }
+                          >
+                            {remediatingSite === f.site_url ? "Queuing…" : "Remediate"}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {failuresTotal > failuresPerPage && (
+              <div className="pagination-bar">
+                <button
+                  className="pagination-btn"
+                  disabled={failuresPage <= 1}
+                  onClick={() => setFailuresPage((p) => p - 1)}
+                >
+                  Prev
+                </button>
+                <span className="pagination-info">
+                  Page {failuresPage} /{" "}
+                  {Math.max(1, Math.ceil(failuresTotal / failuresPerPage))}
+                </span>
+                <button
+                  className="pagination-btn"
+                  disabled={
+                    failuresPage >= Math.ceil(failuresTotal / failuresPerPage)
+                  }
+                  onClick={() => setFailuresPage((p) => p + 1)}
+                >
+                  Next
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      <div className="card" style={{ padding: 14, marginTop: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h3 style={{ margin: 0 }}>Scan now</h3>
+          <button
+            className="add-btn"
+            disabled={scanning}
+            onClick={handleTriggerScan}
+          >
+            {scanning ? "Queuing..." : "Run Company-Wide Sharing Scan"}
+          </button>
+        </div>
+        {scanMessage && (
+          <div style={{ marginTop: 8, fontSize: 13 }}>{scanMessage}</div>
+        )}
+        {recentScans.length > 0 && (
+          <table className="allowlist-table" style={{ marginTop: 12 }}>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Trigger</th>
+                <th>Status</th>
+                <th>Dry-run</th>
+                <th>Sites</th>
+                <th>Violations</th>
+                <th>Remediated</th>
+                <th>Would Remediate</th>
+                <th>Compliant</th>
+                <th>Errors</th>
+                <th>Completed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentScans.map((s) => (
+                <tr key={s.id}>
+                  <td>{s.id}</td>
+                  <td>{s.trigger_type}</td>
+                  <td>{s.status}</td>
+                  <td>{s.dry_run ? "yes" : "no"}</td>
+                  <td>{s.total_sites_scanned}</td>
+                  <td>{s.violations_found}</td>
+                  <td>{s.remediated}</td>
+                  <td>{s.would_remediate}</td>
+                  <td>{s.already_compliant}</td>
+                  <td>{s.errors}</td>
+                  <td>{formatDate(s.completed_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
+  );
+}
+
+// --- Tab 4: CWS Verification Sweep ---
+
+function CwsVerificationTab() {
+  const [scans, setScans] = useState<CwsVerificationScan[]>([]);
+  const [triggering, setTriggering] = useState(false);
+  const [message, setMessage] = useState("");
+  const [selectedScanId, setSelectedScanId] = useState<number | null>(null);
+  const [events, setEvents] = useState<CwsVerificationEvent[]>([]);
+  const [driftTypeFilter, setDriftTypeFilter] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("");
+
+  const fetchScans = useCallback(() => {
+    apiFetch<{ scans: CwsVerificationScan[] }>(
+      "/cws-verification/scans?page=1&per_page=10",
+    )
+      .then((data) => setScans(data.scans))
+      .catch(() => setScans([]));
+  }, []);
+
+  const fetchEvents = useCallback(() => {
+    const params = new URLSearchParams({ page: "1", per_page: "100" });
+    if (selectedScanId != null) params.set("scan_id", String(selectedScanId));
+    if (driftTypeFilter) params.set("drift_type", driftTypeFilter);
+    if (sourceFilter) params.set("trigger_source", sourceFilter);
+    apiFetch<{ events: CwsVerificationEvent[] }>(
+      `/cws-verification/events?${params.toString()}`,
+    )
+      .then((data) => setEvents(data.events))
+      .catch(() => setEvents([]));
+  }, [selectedScanId, driftTypeFilter, sourceFilter]);
+
+  useEffect(() => {
+    fetchScans();
+  }, [fetchScans]);
+
+  useEffect(() => {
+    fetchEvents();
+  }, [fetchEvents]);
+
+  async function handleTrigger() {
+    setTriggering(true);
+    setMessage("");
+    try {
+      const res = await apiPost<{ scan_id: number }>(
+        "/cws-verification/scan",
+        {},
+      );
+      setMessage(
+        `Queued verification sweep #${res.scan_id}. This runs against every enabled user + every Graph-discovered site and typically takes hours — refresh to watch progress.`,
+      );
+      setTimeout(fetchScans, 2000);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Failed to queue sweep");
+    } finally {
+      setTriggering(false);
+    }
+  }
+
+  return (
+    <>
+      <div
+        className="card"
+        style={{ padding: "10px 14px", marginBottom: 12, background: "#f4f6fb" }}
+      >
+        <strong>CWS Verification Sweep (detect-only).</strong> Belt-and-suspenders
+        cross-check that complements the daily CWS scan. Enumerates every enabled
+        user's OneDrive URL plus every Graph-discovered SharePoint site, checks
+        the <code>DisableCompanyWideSharingLinks</code> setting on each, and
+        records drift to this table. No remediation is performed — the daily CWS
+        scan owns remediation for the subset it can see, and event-driven drift
+        from <code>CompanyLinkCreated</code> is also recorded here with{" "}
+        <code>trigger_source = audit_event</code>.
+      </div>
+
+      <div className="card" style={{ padding: 14, marginBottom: 16 }}>
+        <div
+          style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
+        >
+          <h3 style={{ margin: 0 }}>Run verification sweep</h3>
+          <button
+            className="add-btn"
+            disabled={triggering}
+            onClick={handleTrigger}
+          >
+            {triggering ? "Queuing..." : "Run Verification Sweep"}
+          </button>
+        </div>
+        {message && (
+          <div style={{ marginTop: 8, fontSize: 13 }}>{message}</div>
+        )}
+
+        {scans.length > 0 && (
+          <table className="allowlist-table" style={{ marginTop: 12 }}>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Trigger</th>
+                <th>Status</th>
+                <th>Candidates</th>
+                <th>Checked</th>
+                <th>Drifts</th>
+                <th>Unprov.</th>
+                <th>OK</th>
+                <th>Errors</th>
+                <th>Started</th>
+                <th>Completed</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {scans.map((s) => (
+                <tr
+                  key={s.id}
+                  style={{
+                    background: selectedScanId === s.id ? "#eef4ff" : undefined,
+                  }}
+                >
+                  <td>{s.id}</td>
+                  <td>{s.trigger_type}</td>
+                  <td>{s.status}</td>
+                  <td>{s.total_candidates}</td>
+                  <td>{s.checked}</td>
+                  <td>{s.drifts_found}</td>
+                  <td>{s.unprovisioned_count}</td>
+                  <td>{s.ok_count}</td>
+                  <td>{s.errors}</td>
+                  <td>{formatDate(s.started_at)}</td>
+                  <td>{formatDate(s.completed_at)}</td>
+                  <td>
+                    <button
+                      className="pagination-btn"
+                      onClick={() =>
+                        setSelectedScanId(selectedScanId === s.id ? null : s.id)
+                      }
+                    >
+                      {selectedScanId === s.id ? "Clear" : "View events"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="card" style={{ padding: 14 }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 12,
+            alignItems: "center",
+            marginBottom: 8,
+          }}
+        >
+          <h3 style={{ margin: 0 }}>
+            Drift events
+            {selectedScanId != null ? ` (scan #${selectedScanId})` : ""}
+          </h3>
+          <select
+            className="filter-input"
+            value={driftTypeFilter}
+            onChange={(e) => setDriftTypeFilter(e.target.value)}
+          >
+            <option value="">All drift types</option>
+            <option value="drift">drift</option>
+            <option value="error">error</option>
+          </select>
+          <select
+            className="filter-input"
+            value={sourceFilter}
+            onChange={(e) => setSourceFilter(e.target.value)}
+          >
+            <option value="">All sources</option>
+            <option value="scheduled">scheduled</option>
+            <option value="audit_event">audit_event</option>
+          </select>
+        </div>
+        {events.length === 0 ? (
+          <div className="empty-message">No drift events recorded.</div>
+        ) : (
+          <table className="allowlist-table">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Scan</th>
+                <th>Source</th>
+                <th>Type</th>
+                <th>Site</th>
+                <th>User UPN</th>
+                <th>Expected</th>
+                <th>Actual</th>
+                <th>Exempt?</th>
+              </tr>
+            </thead>
+            <tbody>
+              {events.map((e) => (
+                <tr key={e.id}>
+                  <td>{formatDate(e.created_at)}</td>
+                  <td>{e.scan_id ?? "—"}</td>
+                  <td>{e.trigger_source}</td>
+                  <td>{e.drift_type}</td>
+                  <td>
+                    <a href={e.site_url} target="_blank" rel="noopener noreferrer">
+                      {e.site_url}
+                    </a>
+                  </td>
+                  <td>{e.user_upn || "—"}</td>
+                  <td>{e.expected_value || "—"}</td>
+                  <td>{e.actual_value || "—"}</td>
+                  <td>{e.exempt_reason || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
+  );
+}
+
+// --- Tab 5: Enforcement Events ---
 
 function EventsTab() {
   const [events, setEvents] = useState<PolicyEvent[]>([]);
@@ -1079,6 +2052,18 @@ export default function AllowList() {
           Public Visibility
         </button>
         <button
+          className={`tab-btn ${activeTab === "company-wide-sharing" ? "active" : ""}`}
+          onClick={() => setActiveTab("company-wide-sharing")}
+        >
+          Company-Wide Sharing
+        </button>
+        <button
+          className={`tab-btn ${activeTab === "cws-verification" ? "active" : ""}`}
+          onClick={() => setActiveTab("cws-verification")}
+        >
+          Verification Sweep
+        </button>
+        <button
           className={`tab-btn ${activeTab === "events" ? "active" : ""}`}
           onClick={() => setActiveTab("events")}
         >
@@ -1088,6 +2073,8 @@ export default function AllowList() {
 
       {activeTab === "sharing" && <SharingTab />}
       {activeTab === "visibility" && <VisibilityTab />}
+      {activeTab === "company-wide-sharing" && <CompanyWideSharingTab />}
+      {activeTab === "cws-verification" && <CwsVerificationTab />}
       {activeTab === "events" && <EventsTab />}
     </div>
   );

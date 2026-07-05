@@ -1,6 +1,7 @@
 """Tests for the AI response parser (category-based rubric)."""
 
 from app.ai.base_provider import CategoryDetection
+import pytest
 from app.ai.response_parser import parse_ai_response
 
 
@@ -99,17 +100,18 @@ class TestMarkdownFenced:
 
 
 class TestMalformed:
-    def test_complete_garbage(self):
-        result = parse_ai_response("I don't know what to say")
-        assert len(result["categories"]) == 1
-        assert result["categories"][0].id == "none"
-        assert result["categories"][0].evidence == "parse_error"
-        assert result["context"] == "mixed"
+    def test_complete_garbage_raises(self):
+        # Fail closed: unparseable output used to become a clean 'none'
+        # verdict; now it raises so the event retries and ultimately fails
+        # instead of silently passing an unanalyzed file.
+        from app.ai.exceptions import TransientAIError
+        with pytest.raises(TransientAIError):
+            parse_ai_response("I don't know what to say")
 
-    def test_empty_string(self):
-        result = parse_ai_response("")
-        assert result["categories"][0].id == "none"
-        assert result["categories"][0].evidence == "parse_error"
+    def test_empty_string_raises(self):
+        from app.ai.exceptions import TransientAIError
+        with pytest.raises(TransientAIError):
+            parse_ai_response("")
 
     def test_json_with_surrounding_text(self):
         raw = (

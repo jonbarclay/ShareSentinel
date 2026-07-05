@@ -555,7 +555,7 @@ class TestFileNotFoundHandling(unittest.TestCase):
 class TestAIAnalysisFailureHandling(unittest.TestCase):
     """When the AI provider returns a failure response, the pipeline should handle it."""
 
-    def test_ai_failure_still_records_verdict(self):
+    def test_ai_failure_requeues_not_clean_verdict(self):
         job = _make_file_job(event_id="evt-ai-fail-001")
         config = _make_config()
         failed_response = _make_ai_response(
@@ -622,11 +622,20 @@ class TestAIAnalysisFailureHandling(unittest.TestCase):
             # AI was called (returned failure response)
             ai_provider.analyze.assert_called_once()
 
-            # Verdict should still be recorded (rating=0 from failure)
-            verdict_repo.create_verdict.assert_called_once()
+            # Fail closed (2026-07-05): a success=False analysis must NOT be
+            # recorded as a clean verdict. The event goes down the requeue
+            # path (status 'queued'/'failed') instead.
+            verdict_repo.create_verdict.assert_not_called()
 
-            # Rating=0 < threshold=4, no notification
+            # No analyst alert for the (empty) verdict either
             dispatcher.dispatch.assert_not_called()
+
+            # The event was requeued or failed — never left 'completed' clean
+            statuses = [
+                c.args[1] if len(c.args) > 1 else c.kwargs.get("status")
+                for c in event_repo.update_event_status.call_args_list
+            ]
+            assert "completed" not in statuses
 
 
 # ---------------------------------------------------------------------------

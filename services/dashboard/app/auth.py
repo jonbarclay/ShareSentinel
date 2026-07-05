@@ -162,18 +162,18 @@ def _user_roles(user: dict) -> set[str]:
     - ``analyst``: user in analyst OR admin groups
     - ``admin``: user in admin groups only
 
-    When neither admin nor analyst group IDs are configured, all
-    authenticated users get all roles (graceful degradation).
+    FAIL CLOSED: a role is only granted through explicit group membership.
+    Admin mutations flip tenant-wide SharePoint sharing and group visibility,
+    so an unconfigured OIDC_ADMIN_GROUP_IDS must mean "nobody is admin" — the
+    previous behavior granted every authenticated user all roles when both
+    group lists were empty, turning a config omission into full tenant-mutation
+    access for the whole university.
     """
     roles = {"viewer"}
     user_groups = set(user.get("groups", []))
 
     admin_groups = set(config.OIDC_ADMIN_GROUP_IDS)
     analyst_groups = set(config.OIDC_ANALYST_GROUP_IDS)
-
-    # Graceful degradation: no RBAC groups configured = everyone gets all roles
-    if not admin_groups and not analyst_groups:
-        return {"viewer", "analyst", "admin"}
 
     if admin_groups and user_groups.intersection(admin_groups):
         roles.update({"analyst", "admin"})

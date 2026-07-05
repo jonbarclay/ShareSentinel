@@ -20,7 +20,7 @@ from ..ai.base_provider import (
     TIER_2,
     apply_escalation_overrides,
 )
-from ..ai.exceptions import TransientAIError
+from ..ai.exceptions import AIAnalysisFailedError, TransientAIError
 from ..ai.prompt_manager import format_file_size
 from ..config import Config
 from ..database.repositories import (
@@ -49,6 +49,7 @@ from ..graph_api.transcript import (
 from ..notifications.base_notifier import AlertPayload, NotificationDispatcher
 from .classifier import Action, Category, ClassificationResult, FileClassifier
 from .cleanup import Cleanup
+from .cws_drift_detector import check_anonymous_link_drift, check_company_link_drift
 from .downloader import DownloadError, FileDownloader
 from ..graph_api.client import AccessDeniedError, FileNotFoundError as GraphFileNotFoundError, GraphAPIError
 from .hasher import FileHasher
@@ -118,6 +119,28 @@ async def process_job(
         await audit_repo.log(event_id, "event_recorded", {"status": "processing"})
         logger.info("[%s] Step 1: Event recorded", event_id)
 
+        # Side effect: event-driven sharing-policy drift detection + (optional)
+        # immediate single-site remediation. Each helper no-ops unless its
+        # operation matches. Non-blocking — failures are swallowed internally.
+        _op = getattr(job, "operation", "") or ""
+        _site_url = getattr(job, "site_url", "") or ""
+        _site_display = getattr(job, "site_display_name", "") or ""
+        await check_company_link_drift(
+            db_pool, redis,
+            operation=_op,
+            site_url=_site_url,
+            user_upn=getattr(job, "user_id", "") or "",
+            site_display_name=_site_display,
+            enabled=config.event_remediation_enabled,
+        )
+        await check_anonymous_link_drift(
+            db_pool, redis,
+            operation=_op,
+            site_url=_site_url,
+            site_display_name=_site_display,
+            enabled=config.event_remediation_enabled,
+        )
+
         # ----------------------------------------------------------------
         # Step 2: Classify Item (File vs Folder)
         # ----------------------------------------------------------------
@@ -152,6 +175,7 @@ async def process_job(
         try:
             await _requeue_event(
                 event_id, str(exc), config, event_repo, audit_repo, redis, job_data,
+                notifier_dispatcher=notifier_dispatcher,
             )
         except Exception:
             logger.exception("[%s] Failed to requeue after transient error", event_id)
@@ -168,6 +192,15 @@ async def process_job(
                     event_id, "pipeline_failed", status="error",
                     error="Unhandled exception in pipeline",
                 )
+                # Terminal failure: alert an analyst (config-gated) — a shared
+                # file that was never analyzed must not fail silently.
+                try:
+                    await _notify_failure(
+                        event_id, "unhandled_exception",
+                        _DictJob(job_data), {}, config, notifier_dispatcher, audit_repo,
+                    )
+                except Exception:
+                    logger.exception("[%s] Failure notification failed", event_id)
             else:
                 logger.warning("[%s] Suppressed status downgrade from '%s' to 'failed'", event_id, current)
         except Exception:
@@ -219,6 +252,7 @@ async def _requeue_event(
     audit_repo: AuditLogRepository,
     redis: Any,
     job_data: dict,
+    notifier_dispatcher: Optional[NotificationDispatcher] = None,
 ) -> None:
     """Requeue a failed event for delayed retry, or mark it permanently failed."""
     # Check current retry count
@@ -237,6 +271,16 @@ async def _requeue_event(
             "retry_count": current_retries,
             "last_error": failure_reason,
         }, status="error", error="Max retries exceeded")
+        # Terminal failure: this shared file was never analyzed — tell an
+        # analyst instead of failing silently.
+        if notifier_dispatcher is not None:
+            try:
+                await _notify_failure(
+                    event_id, f"retries exhausted: {failure_reason}",
+                    _DictJob(job_data), {}, config, notifier_dispatcher, audit_repo,
+                )
+            except Exception:
+                logger.exception("[%s] Failure notification failed", event_id)
         return
 
     new_count = await event_repo.requeue_event(event_id, failure_reason)
@@ -322,6 +366,34 @@ async def _process_single_file(
     analysis_response: Optional[AnalysisResponse] = None
     analysis_mode: str = "filename_only"
 
+    async def _filename_only_or_skip(reason: str) -> Optional[AnalysisResponse]:
+        """Run filename-only analysis, or skip entirely if the job opted out.
+
+        Backfill jobs for formerly-public sites set ``skip_if_unprocessable``
+        so that items we cannot content-analyse (download/extraction failed,
+        excluded type, access denied, etc.) are skipped rather than recorded
+        with a low-signal filename-only verdict. Reads the current
+        ``classification``/``metadata``/``file_hash`` locals via closure.
+        """
+        nonlocal analysis_mode
+        if getattr(job, "skip_if_unprocessable", False):
+            await audit_repo.log(event_id, "skipped_unprocessable", {"reason": reason})
+            await event_repo.update_event_status(
+                event_id, "completed", failure_reason=f"skipped_{reason}",
+            )
+            logger.info("[%s] Skipped unprocessable item (reason=%s)", event_id, reason)
+            return None
+        analysis_mode = "filename_only"
+        request = _build_filename_only_request(job, metadata, classification)
+        resp = await _run_ai_analysis(ai_provider, request, event_id, audit_repo)
+        await _record_and_notify(
+            event_id, resp, analysis_mode, config,
+            event_repo, verdict_repo, file_hash_repo, audit_repo,
+            notifier_dispatcher, job, metadata, file_hash,
+            skip_notification=skip_notification,
+        )
+        return resp
+
     try:
         # ----------------------------------------------------------------
         # Step 3: Metadata Pre-screen
@@ -392,17 +464,33 @@ async def _process_single_file(
                         "size": 0,
                         "parent_path": getattr(job, "relative_path", "") or "",
                     }
-                    analysis_mode = "filename_only"
-                    request = _build_filename_only_request(job, metadata, classification=None)
-                    analysis_response = await _run_ai_analysis(ai_provider, request, event_id, audit_repo)
-                    await _record_and_notify(
-                        event_id, analysis_response, analysis_mode, config,
-                        event_repo, verdict_repo, file_hash_repo, audit_repo,
-                        notifier_dispatcher, job, metadata, file_hash,
-                        skip_notification=skip_notification,
-                    )
-                    return analysis_response
+                    return await _filename_only_or_skip("metadata_unavailable")
             logger.info("[%s] Step 3: Metadata fetched (size=%s)", event_id, metadata.get("size"))
+
+            # ---- Sharing link validation gate ----
+            # After live metadata fetch, check if any active sharing links
+            # remain.  If all links have been removed or expired, skip the
+            # expensive pipeline.  This check is skipped for folder children
+            # with prefetched_metadata (parent folder already validated).
+            from ..graph_api.sharing import has_active_sharing_links
+            # ``force_analysis`` jobs (e.g. formerly-public-site backfill) have
+            # no anonymous/org sharing links by design — they were exposed via
+            # site visibility, not links — so bypass the gate for them.
+            if (not getattr(job, "force_analysis", False)
+                    and not has_active_sharing_links(metadata.get("sharing_links"))):
+                logger.info(
+                    "[%s] Step 3: No active sharing links found, skipping analysis",
+                    event_id,
+                )
+                await audit_repo.log(event_id, "sharing_links_inactive", {
+                    "sharing_links": metadata.get("sharing_links"),
+                    "reason": "all_links_removed_or_expired",
+                })
+                await event_repo.update_event_status(
+                    event_id, "completed",
+                    failure_reason="no_active_sharing_links",
+                )
+                return None
 
         # ----------------------------------------------------------------
         # Steps 4 + 5: Apply Exclusion Rules & Check File Size
@@ -476,16 +564,7 @@ async def _process_single_file(
                 await audit_repo.log(event_id, "format_conversion_failed", {
                     "reason": "missing_identifiers",
                 }, status="error")
-                analysis_mode = "filename_only"
-                request = _build_filename_only_request(job, metadata, classification)
-                analysis_response = await _run_ai_analysis(ai_provider, request, event_id, audit_repo)
-                await _record_and_notify(
-                    event_id, analysis_response, analysis_mode, config,
-                    event_repo, verdict_repo, file_hash_repo, audit_repo,
-                    notifier_dispatcher, job, metadata, file_hash,
-                    skip_notification=skip_notification,
-                )
-                return analysis_response
+                return await _filename_only_or_skip("format_conversion_missing_ids")
 
             graph_client = GraphClient(auth=_build_graph_auth(config))
             downloader = FileDownloader()
@@ -505,16 +584,7 @@ async def _process_single_file(
                 # Other download errors: fall back to filename_only
                 logger.warning("[%s] Format conversion download failed, falling back to filename_only: %s", event_id, exc)
                 await audit_repo.log(event_id, "format_conversion_failed", {"reason": str(exc)}, status="error")
-                analysis_mode = "filename_only"
-                request = _build_filename_only_request(job, metadata, classification)
-                analysis_response = await _run_ai_analysis(ai_provider, request, event_id, audit_repo)
-                await _record_and_notify(
-                    event_id, analysis_response, analysis_mode, config,
-                    event_repo, verdict_repo, file_hash_repo, audit_repo,
-                    notifier_dispatcher, job, metadata, file_hash,
-                    skip_notification=skip_notification,
-                )
-                return analysis_response
+                return await _filename_only_or_skip("format_conversion_failed")
             except GraphAPIError as exc:
                 # 406/501: format conversion not supported for this item
                 logger.warning("[%s] Graph API format conversion not supported (HTTP %s): %s", event_id, exc.status_code, exc)
@@ -522,16 +592,7 @@ async def _process_single_file(
                     "status_code": exc.status_code,
                     "error": str(exc),
                 }, status="error")
-                analysis_mode = "filename_only"
-                request = _build_filename_only_request(job, metadata, classification)
-                analysis_response = await _run_ai_analysis(ai_provider, request, event_id, audit_repo)
-                await _record_and_notify(
-                    event_id, analysis_response, analysis_mode, config,
-                    event_repo, verdict_repo, file_hash_repo, audit_repo,
-                    notifier_dispatcher, job, metadata, file_hash,
-                    skip_notification=skip_notification,
-                )
-                return analysis_response
+                return await _filename_only_or_skip("format_conversion_unsupported")
 
             await audit_repo.log(event_id, "format_conversion_downloaded", {
                 "path": str(downloaded_file),
@@ -566,16 +627,7 @@ async def _process_single_file(
 
         # Short-circuit paths that skip download
         if classification.action == Action.FILENAME_ONLY:
-            analysis_mode = "filename_only"
-            request = _build_filename_only_request(job, metadata, classification)
-            analysis_response = await _run_ai_analysis(ai_provider, request, event_id, audit_repo)
-            await _record_and_notify(
-                event_id, analysis_response, analysis_mode, config,
-                event_repo, verdict_repo, file_hash_repo, audit_repo,
-                notifier_dispatcher, job, metadata, file_hash,
-                skip_notification=skip_notification,
-            )
-            return analysis_response
+            return await _filename_only_or_skip("unprocessable_type")
 
         # ----------------------------------------------------------------
         # Step 6: Download File (skip if already downloaded via format conversion)
@@ -608,16 +660,7 @@ async def _process_single_file(
                     return None
 
                 # Other download failures: fall back to filename-only analysis
-                analysis_mode = "filename_only"
-                request = _build_filename_only_request(job, metadata, classification)
-                analysis_response = await _run_ai_analysis(ai_provider, request, event_id, audit_repo)
-                await _record_and_notify(
-                    event_id, analysis_response, analysis_mode, config,
-                    event_repo, verdict_repo, file_hash_repo, audit_repo,
-                    notifier_dispatcher, job, metadata, file_hash,
-                    skip_notification=skip_notification,
-                )
-                return analysis_response
+                return await _filename_only_or_skip("download_failed")
 
             await audit_repo.log(event_id, "file_downloaded", {
                 "path": str(downloaded_file),
@@ -841,6 +884,26 @@ async def _handle_folder_share(
         "sharing_link_url": sharing_link_url,
         "sharing_links": sharing_links,
     })
+
+    # ---- Sharing link validation gate ----
+    # If all sharing links have been removed or expired, skip folder
+    # enumeration and child processing entirely.
+    from ..graph_api.sharing import has_active_sharing_links
+    if (not getattr(job, "force_analysis", False)
+            and not has_active_sharing_links(sharing_links)):
+        logger.info(
+            "[%s] No active sharing links on folder, skipping enumeration",
+            event_id,
+        )
+        await audit_repo.log(event_id, "sharing_links_inactive", {
+            "sharing_links": sharing_links,
+            "reason": "all_links_removed_or_expired",
+        })
+        await event_repo.update_event_status(
+            event_id, "completed",
+            failure_reason="no_active_sharing_links",
+        )
+        return
 
     # ---- Step 2: Enumerate all files ----
     try:
@@ -1764,8 +1827,11 @@ async def _run_ai_analysis(
         retryable_exceptions=(TransientAIError, ConnectionError, TimeoutError),
     )
 
-    # Permanent failure (bad request, auth error, parse failure) — the
-    # provider returned success=False instead of raising.
+    # Permanent failure (bad request, auth error) — the provider returned
+    # success=False instead of raising. Fail CLOSED: this used to fall through
+    # and record an empty-categories response as a clean 'none' verdict, so a
+    # file the AI never judged was silently marked safe. Raising sends the
+    # event through the bounded requeue path and ultimately to status=failed.
     if not response.success:
         logger.warning(
             "[%s] AI analysis returned success=False: %s", event_id, response.error,
@@ -1775,6 +1841,9 @@ async def _run_ai_analysis(
             "model": response.model,
             "error": response.error,
         }, status="error", error=response.error)
+        raise AIAnalysisFailedError(
+            f"AI analysis failed ({response.provider}/{response.model}): {response.error}"
+        )
 
     cat_ids = [c.id for c in response.categories]
     await audit_repo.log(event_id, "ai_analysis_complete", {

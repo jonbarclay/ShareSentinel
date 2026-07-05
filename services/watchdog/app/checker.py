@@ -20,6 +20,24 @@ HEARTBEAT_KEYS = {
     "folder_rescan": "sharesentinel:lifecycle:heartbeat:folder_rescan",
 }
 
+# Optional loops: alert on a STALE heartbeat, but a missing key is fine
+# (the loop may be disabled by config).
+OPTIONAL_HEARTBEAT_KEYS = {
+    "cws_verification": "sharesentinel:lifecycle:heartbeat:cws_verification",
+    "cws_drift_remediation": "sharesentinel:lifecycle:heartbeat:cws_drift_remediation",
+    "cws_bulk_remediation": "sharesentinel:lifecycle:heartbeat:cws_bulk_remediation",
+    "cws_exception_sync": "sharesentinel:lifecycle:heartbeat:cws_exception_sync",
+    "cws_allowlist_action": "sharesentinel:lifecycle:heartbeat:cws_allowlist_action",
+    "cws_failure_diagnostic": "sharesentinel:lifecycle:heartbeat:cws_failure_diagnostic",
+}
+
+WORKER_HEARTBEAT_KEY = "sharesentinel:worker:heartbeat"
+JOBS_QUEUE_KEY = "sharesentinel:jobs"
+DLQ_KEYS = (
+    "sharesentinel:site_policy_action:dlq",
+    "sharesentinel:company_wide_sharing_action:dlq",
+)
+
 
 @dataclass
 class LoopHealth:
@@ -90,6 +108,149 @@ async def check_all_loops(
             audit_health.last_error = poll_info
 
     return results
+
+
+@dataclass
+class SystemAlert:
+    """Alert-only finding (no container restart) from the system-level sweep."""
+
+    name: str
+    severity: str  # 'warning' | 'critical'
+    message: str
+
+
+async def check_system_health(
+    redis_client: aioredis.Redis,
+    db_pool: asyncpg.Pool,
+    config: WatchdogConfig,
+) -> list[SystemAlert]:
+    """Alert-only checks beyond the lifecycle-cron loop heartbeats.
+
+    Covers the worker (the component doing all analysis, previously entirely
+    unmonitored), queue/DLQ depths, optional CWS loop heartbeats, failed
+    policy scans (incl. enumeration-floor failures), failed-event volume, and
+    inspection-queue age.
+    """
+    now = time.time()
+    alerts: list[SystemAlert] = []
+
+    # 1. Worker heartbeat (dead worker = nothing gets analyzed)
+    try:
+        raw = await redis_client.get(WORKER_HEARTBEAT_KEY)
+        if raw is None:
+            alerts.append(SystemAlert(
+                "worker", "critical",
+                "Worker heartbeat key missing — worker container down or never started",
+            ))
+        else:
+            age = now - float(raw)
+            if age > config.heartbeat_stale_seconds:
+                alerts.append(SystemAlert(
+                    "worker", "critical",
+                    f"Worker heartbeat stale ({int(age)}s old) — analysis pipeline stalled",
+                ))
+    except Exception:
+        logger.warning("Worker heartbeat check failed", exc_info=True)
+
+    # 2. Optional CWS loop heartbeats (stale only; missing = disabled, fine)
+    for name, key in OPTIONAL_HEARTBEAT_KEYS.items():
+        try:
+            raw = await redis_client.get(key)
+            if raw is None:
+                continue
+            age = now - float(raw)
+            if age > config.heartbeat_stale_seconds:
+                alerts.append(SystemAlert(
+                    name, "warning",
+                    f"{name} heartbeat stale ({int(age)}s old)",
+                ))
+        except Exception:
+            logger.warning("Heartbeat check failed for %s", name, exc_info=True)
+
+    # 3. Queue depth (worker falling behind or wedged)
+    try:
+        depth = await redis_client.llen(JOBS_QUEUE_KEY)
+        if depth > config.queue_depth_alert:
+            alerts.append(SystemAlert(
+                "jobs_queue", "warning",
+                f"Jobs queue depth {depth} exceeds threshold {config.queue_depth_alert}",
+            ))
+    except Exception:
+        logger.warning("Queue depth check failed", exc_info=True)
+
+    # 4. Dead-letter queues (enforcement actions that failed and were parked)
+    for dlq in DLQ_KEYS:
+        try:
+            depth = await redis_client.llen(dlq)
+            if depth > 0:
+                alerts.append(SystemAlert(
+                    "dead_letter", "warning",
+                    f"{depth} dead-lettered enforcement action(s) on {dlq} — "
+                    "inspect and re-queue or discard",
+                ))
+        except Exception:
+            logger.warning("DLQ check failed for %s", dlq, exc_info=True)
+
+    # 5. Failed site policy scans in the last 24h (incl. enumeration floor)
+    try:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT COUNT(*) AS n, MAX(error_message) AS sample
+                FROM site_policy_scans
+                WHERE status = 'failed' AND created_at > NOW() - INTERVAL '24 hours'
+                """
+            )
+        if row and row["n"]:
+            alerts.append(SystemAlert(
+                "site_policy_scan", "critical",
+                f"{row['n']} failed site policy scan(s) in 24h. "
+                f"Latest error: {(row['sample'] or '')[:200]}",
+            ))
+    except Exception:
+        logger.warning("Failed-scan check failed", exc_info=True)
+
+    # 6. Failed events volume (files shared but never analyzed)
+    try:
+        async with db_pool.acquire() as conn:
+            n = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM events
+                WHERE status = 'failed'
+                  AND updated_at > NOW() - INTERVAL '24 hours'
+                """
+            )
+        if n and n > config.failed_events_alert_24h:
+            alerts.append(SystemAlert(
+                "failed_events", "warning",
+                f"{n} events failed in the last 24h (threshold "
+                f"{config.failed_events_alert_24h}) — files are going unanalyzed",
+            ))
+    except Exception:
+        logger.warning("Failed-events check failed", exc_info=True)
+
+    # 7. Inspection queue age (delegated content awaiting manual review)
+    try:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT COUNT(*) AS n,
+                       EXTRACT(EPOCH FROM (NOW() - MIN(created_at))) / 86400 AS oldest_days
+                FROM events
+                WHERE status = 'pending_manual_inspection'
+                """
+            )
+        if row and row["n"] and (row["oldest_days"] or 0) > config.inspection_age_alert_days:
+            alerts.append(SystemAlert(
+                "inspection_queue", "warning",
+                f"{row['n']} events pending manual inspection; oldest is "
+                f"{int(row['oldest_days'])} days old "
+                f"(threshold {config.inspection_age_alert_days}d)",
+            ))
+    except Exception:
+        logger.warning("Inspection-queue check failed", exc_info=True)
+
+    return alerts
 
 
 async def _check_audit_poll_state(

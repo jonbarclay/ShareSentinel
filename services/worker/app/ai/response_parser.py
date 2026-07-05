@@ -118,15 +118,15 @@ def parse_ai_response(raw_text: str) -> Dict:
                 pass
 
     if parsed is None:
+        # Fail CLOSED: an unparseable response used to fall through as a clean
+        # 'none' verdict, silently passing files the AI never actually judged.
+        # Raising TransientAIError re-runs the analysis (a fresh call usually
+        # returns valid JSON); exhausted retries mark the event failed.
         logger.warning("Failed to parse AI response: %s", raw_text[:200])
-        return {
-            "categories": [CategoryDetection(id="none", confidence="low", evidence="parse_error")],
-            "context": "mixed",
-            "summary": f"No JSON found in AI response. Raw response: {raw_text[:500]}",
-            "recommendation": "Manual review recommended due to AI response parsing failure.",
-            "affected_count": 0,
-            "pii_types_found": [],
-        }
+        from .exceptions import TransientAIError
+        raise TransientAIError(
+            f"No JSON found in AI response (first 200 chars: {raw_text[:200]!r})"
+        )
 
     # ------------------------------------------------------------------
     # Validate and sanitize fields

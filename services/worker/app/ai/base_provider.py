@@ -77,6 +77,13 @@ def compute_escalation_tier(
     if category_ids & TIER_2:
         return "tier_2"
 
+    # 2b. Unknown category IDs escalate for review. The parser keeps
+    # off-taxonomy IDs the model invents; before this rule they matched no
+    # tier and failed toward NON-escalation — the model saying "this is
+    # sensitive" in words we didn't anticipate was silently ignored.
+    if category_ids - ALL_CATEGORY_IDS:
+        return "tier_2"
+
     # 3. Safety net: government IDs in pii_types regardless of category used
     pii_set = set(pii_types_found or [])
     if pii_set & GOVERNMENT_ID_PII:

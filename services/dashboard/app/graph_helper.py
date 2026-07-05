@@ -310,6 +310,50 @@ async def _resolve_group_site_url(token: str, group_id: str) -> str:
     return ""
 
 
+async def get_group_members(group_id: str, top: int = 999) -> List[Dict]:
+    """Fetch all user members of an Entra ID group for read-only display.
+
+    Paginates through /groups/{id}/members/microsoft.graph.user so nested groups
+    and service principals are skipped. Returns empty list if Graph is not
+    configured so callers can degrade gracefully.
+    """
+    if not is_configured():
+        return []
+
+    token = _get_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "ConsistencyLevel": "eventual",
+    }
+    members: List[Dict] = []
+
+    url: Optional[str] = f"{GRAPH_BASE}/groups/{group_id}/members/microsoft.graph.user"
+    first_page = True
+    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        while url:
+            resp = await client.get(
+                url,
+                headers=headers,
+                params={
+                    "$select": "id,displayName,mail,userPrincipalName",
+                    "$top": str(top),
+                } if first_page else None,
+            )
+            first_page = False
+            resp.raise_for_status()
+            data = resp.json()
+            for m in data.get("value", []):
+                members.append({
+                    "id": m.get("id", ""),
+                    "displayName": m.get("displayName", ""),
+                    "mail": m.get("mail", "") or m.get("userPrincipalName", ""),
+                    "userPrincipalName": m.get("userPrincipalName", ""),
+                })
+            url = data.get("@odata.nextLink")
+
+    return members
+
+
 async def get_site_details(
     site_url: str,
     group_id: str = "",

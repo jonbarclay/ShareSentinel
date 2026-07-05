@@ -373,6 +373,32 @@ class EventRepository:
             )
             return [dict(r) for r in rows]
 
+    async def get_orphaned_queued_events(self, min_age_minutes: int) -> List[Dict[str, Any]]:
+        """Find non-child events sitting in 'queued' with no Redis job behind them.
+
+        requeue_event() sets status='queued' and schedules the actual Redis
+        push from an in-memory task -- a worker restart during the retry
+        backoff loses that task, leaving the row 'queued' forever with nothing
+        on the queue. Anything queued for longer than the maximum retry
+        backoff is such an orphan.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT event_id, operation, workload, user_id, object_id,
+                       site_url, file_name, relative_path, item_type,
+                       sharing_type, sharing_scope, sharing_permission,
+                       event_time, retry_count, updated_at
+                FROM events
+                WHERE status = 'queued'
+                  AND parent_event_id IS NULL
+                  AND updated_at < NOW() - make_interval(mins => $1)
+                ORDER BY updated_at
+                """,
+                min_age_minutes,
+            )
+            return [dict(r) for r in rows]
+
 
 class VerdictRepository:
     """CRUD operations for the ``verdicts`` table."""

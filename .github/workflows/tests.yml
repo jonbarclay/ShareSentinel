@@ -1,0 +1,41 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  worker-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install worker dependencies
+        run: |
+          pip install -r services/worker/requirements.txt
+          pip install pytest pytest-asyncio
+      # Template resolution walks up from services/worker to the repo-root
+      # config/ directory, so no extra env is needed.
+      - name: Run worker test suite
+        working-directory: services/worker
+        run: python -m pytest tests -q
+
+  lifecycle-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install lifecycle-cron dependencies
+        run: |
+          pip install -r services/lifecycle-cron/requirements.txt
+          pip install pytest
+      - name: Run enforcement-logic tests
+        working-directory: services/lifecycle-cron
+        run: python -m pytest tests -q

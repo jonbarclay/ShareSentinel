@@ -64,6 +64,13 @@ class Config:
     # Security / remediation
     security_email: str = ""
 
+    # Event-driven sharing-policy remediation. When enabled, an org-wide
+    # (CompanyLinkCreated) or anonymous (AnonymousLinkCreated) link created on a
+    # site/OneDrive that is not on the relevant allow list triggers immediate
+    # single-site remediation via the lifecycle-cron action queues. Default off
+    # because it writes production tenant settings.
+    event_remediation_enabled: bool = False
+
     # User notifications (post-disposition emails to file owners)
     user_notification_enabled: bool = False
     user_notification_override_email: str = ""
@@ -157,6 +164,9 @@ class Config:
             jira_issue_type=os.environ.get("JIRA_ISSUE_TYPE", "Task"),
             dashboard_url=_g("dashboard_url", "DASHBOARD_URL", ""),
             security_email=_g("security_email", "SECURITY_EMAIL", ""),
+            event_remediation_enabled=_g(
+                "event_remediation_enabled", "EVENT_REMEDIATION_ENABLED", "false"
+            ).lower() == "true",
             user_notification_enabled=_g("user_notification_enabled", "USER_NOTIFICATION_ENABLED", "false").lower() == "true",
             user_notification_override_email=_g("user_notification_override_email", "USER_NOTIFICATION_OVERRIDE_EMAIL", ""),
             user_notification_bcc=_g("user_notification_bcc", "USER_NOTIFICATION_BCC", ""),

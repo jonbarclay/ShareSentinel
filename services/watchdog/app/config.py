@@ -35,6 +35,11 @@ class WatchdogConfig:
     # Consecutive stale checks before restart (for alive-but-failing)
     stale_checks_before_restart: int = 3
 
+    # System-level alert thresholds (alert-only, no restart)
+    queue_depth_alert: int = 200
+    failed_events_alert_24h: int = 20
+    inspection_age_alert_days: int = 30
+
     # Logging
     log_level: str = "INFO"
 
@@ -67,6 +72,15 @@ class WatchdogConfig:
             ),
             stale_checks_before_restart=int(
                 os.environ.get("WATCHDOG_STALE_CHECKS_BEFORE_RESTART", "3")
+            ),
+            queue_depth_alert=int(
+                os.environ.get("WATCHDOG_QUEUE_DEPTH_ALERT", "200")
+            ),
+            failed_events_alert_24h=int(
+                os.environ.get("WATCHDOG_FAILED_EVENTS_ALERT_24H", "20")
+            ),
+            inspection_age_alert_days=int(
+                os.environ.get("WATCHDOG_INSPECTION_AGE_ALERT_DAYS", "30")
             ),
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
         )
