@@ -312,8 +312,34 @@ async def check_and_remediate(
             )
 
     elif stale_loops:
+        # A container restart kills any in-flight CWS PowerShell job (they run
+        # as child processes and take up to ~9h). A STALE loop means the
+        # container is alive — restarting it to fix one failing loop is not
+        # worth destroying a tenant-wide sweep (observed 2026-07-05: three
+        # stale-triggered restarts killed CWS verification sweep #161 mid-run).
+        cws_lock_held = False
+        try:
+            cws_lock_held = bool(
+                await redis_client.get("sharesentinel:cws_remediation_lock")
+            )
+        except Exception:
+            logger.warning("Could not check CWS remediation lock", exc_info=True)
+
+        if cws_lock_held:
+            severity = "warning"
+            msg = (
+                f"WARNING: ShareSentinel loop(s) stale but a CWS PowerShell job "
+                f"is in flight — deferring auto-restart until it finishes\n\n"
+                f"Loop status:\n{_format_loop_status(results)}\n\n"
+                f"Consecutive failures: {consecutive}\n"
+                f"Time: {_now_str()}"
+            )
+            logger.warning(
+                "Stale loop(s) but CWS lock held — deferring restart (check %d)",
+                consecutive,
+            )
         # Only stale (alive but failing) — don't restart immediately
-        if consecutive >= config.stale_checks_before_restart and config.auto_restart:
+        elif consecutive >= config.stale_checks_before_restart and config.auto_restart:
             # Persistent stale — restart
             restart_count = await _get_restart_count(redis_client)
             if restart_count < config.max_restarts_per_hour:

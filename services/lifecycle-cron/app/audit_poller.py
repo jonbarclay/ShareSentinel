@@ -45,8 +45,13 @@ RECON_LAST_KEY = "sharesentinel:audit_recon_last"
 # timeout during API slowdowns; instead of abandoning a slow query and
 # re-creating an identical one every cycle (which never converges), remember
 # the query id per time window and resume waiting on it next cycle.
+# The value is JSON {"id": ..., "timeouts": n}; after MAX_QUERY_RESUMES
+# timed-out waits the query is treated as a server-side zombie and abandoned
+# (observed 2026-07-06: a query stayed status=running for 10+ hours and the
+# resume loop pinned the checkpoint in place indefinitely).
 INFLIGHT_QUERY_KEY_PREFIX = "sharesentinel:audit_query_inflight:"
 INFLIGHT_QUERY_TTL_S = 86400  # Graph retains queries long enough; 24h is ample
+MAX_QUERY_RESUMES = 2
 
 # Audit query polling
 QUERY_POLL_INTERVAL_S = 10
@@ -184,6 +189,13 @@ class AuditLogPoller:
             total_provisioning += stats.get("provisioning", 0)
             # Advance to next chunk (the saved poll time is chunk_end)
             chunk_start = chunk_end
+            # Liveness: a multi-chunk pass (catch-up or reconciliation) can
+            # exceed the watchdog's poll-staleness threshold without touching
+            # audit_poll_state — which got the container auto-restarted
+            # mid-pass on 2026-07-05, killing an unrelated 9-hour CWS sweep.
+            # Refresh updated_at between chunks so "working" isn't "stale".
+            if not save_state:
+                await self._touch_poll_state()
 
         logger.info(
             "Chunked poll complete: %d total records, %d new jobs across all chunks",
@@ -215,7 +227,13 @@ class AuditLogPoller:
         query_id = await self._get_or_create_query(
             inflight_key, query_start, end_time
         )
-        await self._wait_for_query_completion(query_id)
+        try:
+            await self._wait_for_query_completion(query_id)
+        except TimeoutError:
+            # Count the timed-out wait so a zombie query is abandoned after
+            # MAX_QUERY_RESUMES instead of pinning the checkpoint forever.
+            await self._record_query_timeout(inflight_key, query_id)
+            raise
         records = await self._fetch_all_records(query_id)
         # Window fully processed — drop the in-flight marker.
         try:
@@ -266,22 +284,39 @@ class AuditLogPoller:
 
         A query that timed out our wait in a previous cycle usually keeps
         running server-side; resuming it lets slow cycles converge instead of
-        restarting Graph's work from zero every 15 minutes.
+        restarting Graph's work from zero every 15 minutes. But a query that
+        has timed out MAX_QUERY_RESUMES waits is a server-side zombie —
+        abandon it and create a fresh one, or the checkpoint never advances.
         """
         existing: str | None = None
+        timeouts = 0
         try:
             raw = await self._redis.get(inflight_key)
             if raw:
-                existing = raw.decode() if isinstance(raw, bytes) else str(raw)
+                text = raw.decode() if isinstance(raw, bytes) else str(raw)
+                try:
+                    payload = json.loads(text)
+                    existing = payload.get("id")
+                    timeouts = int(payload.get("timeouts", 0))
+                except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
+                    existing = text  # legacy raw-id format
         except Exception:
             logger.debug("Failed to read in-flight query key", exc_info=True)
+
+        if existing and timeouts >= MAX_QUERY_RESUMES:
+            logger.warning(
+                "Abandoning audit query %s after %d timed-out waits — "
+                "creating a fresh query for this window",
+                existing, timeouts,
+            )
+            existing = None
 
         if existing:
             status = await self._get_query_status(existing)
             if status in ("succeeded", "running", "notStarted"):
                 logger.info(
-                    "Resuming in-flight audit query %s (status=%s)",
-                    existing, status,
+                    "Resuming in-flight audit query %s (status=%s, timeouts=%d)",
+                    existing, status, timeouts,
                 )
                 return existing
             logger.info(
@@ -291,10 +326,33 @@ class AuditLogPoller:
 
         query_id = await self._create_audit_query(query_start, end_time)
         try:
-            await self._redis.set(inflight_key, query_id, ex=INFLIGHT_QUERY_TTL_S)
+            await self._redis.set(
+                inflight_key,
+                json.dumps({"id": query_id, "timeouts": 0}),
+                ex=INFLIGHT_QUERY_TTL_S,
+            )
         except Exception:
             logger.debug("Failed to store in-flight query key", exc_info=True)
         return query_id
+
+    async def _record_query_timeout(self, inflight_key: str, query_id: str) -> None:
+        """Bump the timed-out-wait counter for the window's in-flight query."""
+        try:
+            raw = await self._redis.get(inflight_key)
+            timeouts = 0
+            if raw:
+                text = raw.decode() if isinstance(raw, bytes) else str(raw)
+                try:
+                    timeouts = int(json.loads(text).get("timeouts", 0))
+                except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
+                    timeouts = 0
+            await self._redis.set(
+                inflight_key,
+                json.dumps({"id": query_id, "timeouts": timeouts + 1}),
+                ex=INFLIGHT_QUERY_TTL_S,
+            )
+        except Exception:
+            logger.debug("Failed to record query timeout", exc_info=True)
 
     async def _get_query_status(self, query_id: str) -> str:
         """Fetch a query's status; 'missing' on 404, 'unknown' on any error."""
@@ -558,6 +616,16 @@ class AuditLogPoller:
             poll_time,
             events_found,
         )
+
+    async def _touch_poll_state(self) -> None:
+        """Refresh updated_at only — signals liveness to the watchdog without
+        advancing the checkpoint or changing the last status."""
+        try:
+            await self._db.execute(
+                "UPDATE audit_poll_state SET updated_at = NOW() WHERE id = 1"
+            )
+        except Exception:
+            logger.debug("Failed to touch poll state", exc_info=True)
 
     async def save_poll_error(self, error_text: str) -> None:
         """Record a poll failure in audit_poll_state.
