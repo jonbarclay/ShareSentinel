@@ -104,6 +104,10 @@ class LifecycleConfig:
     cws_exception_group_sync_enabled: bool = False
     cws_exception_group_sync_interval_minutes: int = 10
     cws_exception_group_sync_dry_run: bool = True
+    # Periodic full-membership reconciliation: re-enable any current exception
+    # member whose OneDrive has drifted to Disabled (the delta path only catches
+    # membership changes, never an external re-disable of an existing member).
+    cws_exception_reconcile_interval_hours: int = 24
 
     # CWS failure diagnostic loop (wraps Diagnose-OneDriveSite.ps1)
     cws_failure_diagnostic_enabled: bool = True
@@ -270,6 +274,11 @@ class LifecycleConfig:
                 "CWS_EXCEPTION_GROUP_SYNC_DRY_RUN",
                 "true",
             ).lower() == "true",
+            cws_exception_reconcile_interval_hours=int(_g(
+                "cws_exception_reconcile_interval_hours",
+                "CWS_EXCEPTION_RECONCILE_INTERVAL_HOURS",
+                "24",
+            )),
             cws_failure_diagnostic_enabled=_g(
                 "cws_failure_diagnostic_enabled",
                 "CWS_FAILURE_DIAGNOSTIC_ENABLED",

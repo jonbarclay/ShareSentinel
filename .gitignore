@@ -1,6 +1,9 @@
 # Environment
 .env
+.env.*
+!.env.example
 *.env.local
+.claude/
 
 # CWS bulk run logs
 scripts/logs/
@@ -46,6 +49,8 @@ htmlcov/
 
 # Certificates
 *.pfx
+*.p12
+*.key
 nginx/certs/*
 !nginx/certs/.gitkeep
 
@@ -65,6 +70,7 @@ review_downloads/
 manual_review_videos/
 /*.csv
 scripts/*.csv
+link_status_sweep*.csv
 *.log
 *.jsonl
 onedrive_tier*_review*/

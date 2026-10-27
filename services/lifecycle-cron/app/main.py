@@ -727,6 +727,83 @@ async def cws_allowlist_action_loop(
             await asyncio.sleep(5)
 
 
+async def _run_exception_reconcile(
+    db_pool: asyncpg.Pool,
+    redis_client: "aioredis.Redis",
+    config: LifecycleConfig,
+    current: set[str],
+) -> None:
+    """Re-enable any current exception member whose OneDrive drifted to Disabled.
+
+    The delta path only reacts to *membership* changes, so an existing member
+    whose OneDrive is externally re-disabled (e.g. by a drift-remediation sweep
+    that ran before exception-matching existed) never gets re-enabled. This runs
+    the delta script's idempotent 'add' path against the *full* current
+    membership: OneDrives already NotDisabled record 'already_compliant', while
+    any found Disabled are re-enabled. The snapshot is left untouched — these
+    UPNs are already tracked; only the live OneDrive state is being repaired.
+    """
+    if not current:
+        return
+
+    holder = f"exception_reconcile:{int(time.time())}"
+    got_lock = await _acquire_cws_lock(redis_client, holder)
+    if not got_lock:
+        logger.info(
+            "CWS lock held; deferring exception-group reconcile to next tick",
+        )
+        return
+
+    dry_run = config.cws_exception_group_sync_dry_run
+    scan_id: int | None = None
+    jobs_path: Path | None = None
+    try:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO company_wide_sharing_scans
+                    (trigger_type, triggered_by, status, dry_run,
+                     exception_group_member_count)
+                VALUES ('exception_group_reconcile', 'lifecycle-cron',
+                        'pending', $1, $2)
+                RETURNING id
+                """,
+                dry_run, len(current),
+            )
+        scan_id = row["id"]
+
+        jobs_path = Path(f"/tmp/cws_exception_reconcile_{scan_id}.json")
+        jobs_path.write_text(
+            json.dumps({"adds": sorted(current), "removes": []})
+        )
+
+        logger.info(
+            "CWS exception reconcile starting (scan_id=%s, members=%d, dry_run=%s)",
+            scan_id, len(current), dry_run,
+        )
+        ps_rc, _stdout, _stderr = await _run_pwsh_script(
+            "Invoke-CwsExceptionMembershipDelta.ps1",
+            [
+                "-JobsFile", str(jobs_path),
+                "-ScanId", str(scan_id),
+                "-DryRun", "1" if dry_run else "0",
+            ],
+            "cws-exception-reconcile",
+        )
+        if ps_rc != 0:
+            logger.warning(
+                "CWS exception reconcile script exited rc=%d for scan_id=%s",
+                ps_rc, scan_id,
+            )
+    finally:
+        if jobs_path is not None:
+            try:
+                jobs_path.unlink(missing_ok=True)
+            except Exception:
+                logger.warning("Failed to remove jobs file %s", jobs_path)
+        await _release_cws_lock(redis_client, holder)
+
+
 async def cws_exception_group_sync_loop(
     db_pool: asyncpg.Pool,
     auth: GraphAuth,
@@ -751,11 +828,16 @@ async def cws_exception_group_sync_loop(
     asyncio.create_task(_heartbeat_task(redis_client, "cws_exception_sync"))
 
     interval_seconds = max(60, config.cws_exception_group_sync_interval_minutes * 60)
+    reconcile_interval_seconds = (
+        config.cws_exception_reconcile_interval_hours * 3600
+    )
     group_id = config.company_wide_sharing_exception_group_id
 
     logger.info(
-        "CWS exception group sync loop starting (interval=%dm, dry_run=%s, group=%s)",
+        "CWS exception group sync loop starting (interval=%dm, reconcile=%dh, "
+        "dry_run=%s, group=%s)",
         config.cws_exception_group_sync_interval_minutes,
+        config.cws_exception_reconcile_interval_hours,
         config.cws_exception_group_sync_dry_run,
         group_id,
     )
@@ -799,6 +881,20 @@ async def cws_exception_group_sync_loop(
                 logger.debug(
                     "CWS exception group: no change (%d members)", len(current),
                 )
+                # No membership delta — but an existing member's OneDrive may
+                # have been re-disabled out-of-band. Reconcile the full current
+                # membership on the configured cadence to self-heal that.
+                last_reconcile = await _last_completed_at(
+                    db_pool, "company_wide_sharing_scans",
+                    "exception_group_reconcile",
+                )
+                reconcile_due = last_reconcile is None or (
+                    datetime.now(timezone.utc) - last_reconcile
+                ).total_seconds() >= reconcile_interval_seconds
+                if reconcile_due:
+                    await _run_exception_reconcile(
+                        db_pool, redis_client, config, current,
+                    )
                 await asyncio.sleep(interval_seconds)
                 continue
 
